@@ -87,8 +87,7 @@ def main():
     feasible_count = 0
     infeasible_count = 0
     errors = []
-    best_route_data = None
-    best_instance_dist = float("inf")
+    all_route_data = {}
 
     dataset_path = Path(DATASET)
     for track_dir in sorted(dataset_path.glob("n_nodes=*")):
@@ -131,10 +130,10 @@ def main():
                     if nums:
                         dist = int(nums[0])
                         total_dist += dist
-                        # Keep route data from a feasible instance
-                        if dist < best_instance_dist:
-                            best_instance_dist = dist
-                            best_route_data = make_route_data(str(inst), sol_path)
+                        # Keep route data for all feasible instances
+                        rd = make_route_data(str(inst), sol_path)
+                        if rd:
+                            all_route_data[instance_name] = rd
 
             except subprocess.TimeoutExpired:
                 errors.append(f"{instance_name}: timeout")
@@ -155,7 +154,7 @@ def main():
         "instances_solved": solved,
         "instances_feasible": feasible_count,
         "instances_infeasible": infeasible_count,
-        "route_data": best_route_data,
+        "route_data": all_route_data if all_route_data else None,
         "errors": errors if errors else None,
     }
 

@@ -14,6 +14,9 @@ export interface RouteData {
   routes: VehicleRoute[];
 }
 
+// route_data from server: dict keyed by instance name
+export type AllRouteData = Record<string, RouteData>;
+
 export interface LeaderboardEntry {
   rank: number;
   agent_id: string;
@@ -94,7 +97,7 @@ export interface NewGlobalBest {
   agent_id: string;
   score: number;
   improvement_pct: number;
-  route_data: RouteData | null;
+  route_data: AllRouteData | null;
   timestamp: string;
 }
 

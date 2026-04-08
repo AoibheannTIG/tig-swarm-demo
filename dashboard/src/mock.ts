@@ -1,4 +1,4 @@
-import type { WSMessage, RouteData, LeaderboardEntry } from "./types";
+import type { WSMessage, RouteData, AllRouteData, LeaderboardEntry } from "./types";
 
 const ADJECTIVES = [
   "swift", "bold", "keen", "bright", "sharp", "vivid", "fierce", "noble",
@@ -226,7 +226,17 @@ function randomBetween(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-function generateMockRoutes(): RouteData {
+function generateMockRoutes(): AllRouteData {
+  const instances: AllRouteData = {};
+  for (const size of [50, 75, 100]) {
+    for (let i = 0; i < 5; i++) {
+      instances[`n_nodes=${size}/${i}.txt`] = generateMockInstance();
+    }
+  }
+  return instances;
+}
+
+function generateMockInstance(): RouteData {
   const depot = { x: 50, y: 50 };
   const numVehicles = randomBetween(5, 10);
   const routes: Array<{vehicle_id: number; path: Array<{x: number; y: number; customer_id: number}>}> = [];
