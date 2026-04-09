@@ -7,16 +7,20 @@ import os
 import sys
 import tempfile
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).parent.parent
-DATASET = sys.argv[1] if len(sys.argv) > 1 else str(ROOT_DIR / "datasets/vehicle_routing/demo")
+DATASET = sys.argv[1] if len(sys.argv) > 1 else str(ROOT_DIR / "datasets/vehicle_routing/HG")
 INSTANCES = [
-    "n_nodes=50/0.txt",
-    "n_nodes=75/0.txt",
-    "n_nodes=100/0.txt",
-    "n_nodes=100/1.txt",
-    "n_nodes=100/2.txt",
+    "RC1_2_1.txt",
+    "RC1_2_2.txt",
+    "RC1_2_3.txt",
+    "RC1_2_4.txt",
+    "RC1_2_5.txt",
+    "RC1_2_6.txt",
+    "RC1_2_7.txt",
+    "RC1_2_8.txt",
 ]
 SOLVER_TIMEOUT = 5
 
@@ -81,6 +85,41 @@ def make_route_data(inst_path: str, sol_path: str) -> dict | None:
         route_data["routes"].append({"vehicle_id": i, "path": path})
     return route_data
 
+def run_instance(instance_name, dataset_path, solver, evaluator):
+    """Run solver + evaluator for a single instance. Returns a result dict."""
+    inst = dataset_path / instance_name
+    with tempfile.NamedTemporaryFile(suffix=".solution", delete=False) as tmp:
+        sol_path = tmp.name
+    try:
+        result = subprocess.run(
+            [solver, "vehicle_routing", str(inst), sol_path],
+            capture_output=True, text=True, timeout=SOLVER_TIMEOUT,
+        )
+        if result.returncode != 0 or not os.path.exists(sol_path):
+            return {"instance": instance_name, "error": "solver failed"}
+
+        routes = parse_solution_routes(sol_path)
+        eval_result = subprocess.run(
+            [evaluator, "vehicle_routing", str(inst), sol_path],
+            capture_output=True, text=True, timeout=SOLVER_TIMEOUT,
+        )
+        output = (eval_result.stdout + eval_result.stderr).strip()
+
+        if "Error" in output:
+            return {"instance": instance_name, "error": output.split("\n")[0], "num_vehicles": len(routes), "feasible": False}
+
+        nums = re.findall(r"\d+", output)
+        dist = int(nums[0]) if nums else 0
+        rd = make_route_data(str(inst), sol_path)
+        return {"instance": instance_name, "dist": dist, "num_vehicles": len(routes), "feasible": True, "route_data": rd}
+
+    except subprocess.TimeoutExpired:
+        return {"instance": instance_name, "error": "timeout"}
+    finally:
+        if os.path.exists(sol_path):
+            os.unlink(sol_path)
+
+
 def main():
     print("Building solver...", file=sys.stderr)
     build()
@@ -98,49 +137,26 @@ def main():
     all_route_data = {}
 
     dataset_path = Path(DATASET)
-    for instance_name in INSTANCES:
-        inst = dataset_path / instance_name
-
-        with tempfile.NamedTemporaryFile(suffix=".solution", delete=False) as tmp:
-            sol_path = tmp.name
-
-        try:
-            result = subprocess.run(
-                [solver, "vehicle_routing", str(inst), sol_path],
-                capture_output=True, text=True, timeout=SOLVER_TIMEOUT,
-            )
-            if result.returncode != 0 or not os.path.exists(sol_path):
-                errors.append(f"{instance_name}: solver failed")
-                continue
-
-            solved += 1
-            routes = parse_solution_routes(sol_path)
-            total_vehicles += len(routes)
-
-            eval_result = subprocess.run(
-                [evaluator, "vehicle_routing", str(inst), sol_path],
-                capture_output=True, text=True, timeout=SOLVER_TIMEOUT,
-            )
-            output = (eval_result.stdout + eval_result.stderr).strip()
-
-            if "Error" in output:
-                infeasible_count += 1
-                errors.append(f"{instance_name}: {output.split(chr(10))[0]}")
+    workers = min(len(INSTANCES), os.cpu_count() or 1)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(run_instance, name, dataset_path, solver, evaluator): name
+            for name in INSTANCES
+        }
+        for future in as_completed(futures):
+            r = future.result()
+            if "error" in r:
+                errors.append(f"{r['instance']}: {r['error']}")
+                if not r.get("feasible", True):
+                    infeasible_count += 1
+                    solved += 1
             else:
+                solved += 1
                 feasible_count += 1
-                nums = re.findall(r"\d+", output)
-                if nums:
-                    dist = int(nums[0])
-                    total_dist += dist
-                    rd = make_route_data(str(inst), sol_path)
-                    if rd:
-                        all_route_data[instance_name] = rd
-
-        except subprocess.TimeoutExpired:
-            errors.append(f"{instance_name}: timeout")
-        finally:
-            if os.path.exists(sol_path):
-                os.unlink(sol_path)
+                total_dist += r["dist"]
+                total_vehicles += r["num_vehicles"]
+                if r.get("route_data"):
+                    all_route_data[r["instance"]] = r["route_data"]
 
     all_feasible = infeasible_count == 0 and feasible_count > 0
     # Score: total distance if all feasible, otherwise huge penalty per infeasible instance

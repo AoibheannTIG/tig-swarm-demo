@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS experiments (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
     hypothesis_id TEXT,
-    algorithm_diff TEXT DEFAULT '',
+    algorithm_code TEXT DEFAULT '',
     score REAL NOT NULL,
     feasible INTEGER DEFAULT 1,
     num_vehicles INTEGER DEFAULT 0,
@@ -87,7 +87,7 @@ CREATE INDEX IF NOT EXISTS idx_msg_created ON messages(created_at);
 
 DEFAULT_CONFIG = {
     "baseline_score": "1850.5",
-    "benchmark_instances": '["C101","C201","R101","RC101"]',
+    "benchmark_instances": '["RC1_2_1","RC1_2_2","RC1_2_3","RC1_2_4","RC1_2_5","RC1_2_6","RC1_2_7","RC1_2_8"]',
     "admin_key": "ads-2026",
 }
 

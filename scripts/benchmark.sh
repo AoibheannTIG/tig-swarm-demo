@@ -8,7 +8,7 @@ set -e
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-DATASET="${1:-datasets/vehicle_routing/demo}"
+DATASET="${1:-datasets/vehicle_routing/HG}"
 RESULTS_DIR="/tmp/tig_benchmark_$$"
 mkdir -p "$RESULTS_DIR"
 
@@ -27,60 +27,55 @@ INFEASIBLE=0
 ERRORS=""
 ROUTE_JSON="["
 
-for dir in "$DATASET"/n_nodes=*/; do
-  [ -d "$dir" ] || continue
-  for inst in "$dir"*.txt; do
-    [[ "$inst" == *.solution ]] && continue
-    [ -f "$inst" ] || continue
+for inst in "$DATASET"/*.txt; do
+  [[ "$inst" == *.solution ]] && continue
+  [ -f "$inst" ] || continue
 
-    instance_name="$(basename "$(dirname "$inst")")/$(basename "$inst")"
-    sol="$RESULTS_DIR/$(echo "$instance_name" | tr '/' '_').solution"
+  instance_name="$(basename "$inst")"
+  sol="$RESULTS_DIR/${instance_name%.txt}.solution"
 
-    # Run solver (timeout 30s per instance)
-    if timeout 30 ./target/release/tig_solver vehicle_routing "$inst" "$sol" 2>/dev/null; then
-      if [ -f "$sol" ]; then
-        SOLVED=$((SOLVED + 1))
-        NV=$(grep -c "^Route" "$sol" 2>/dev/null || echo "0")
-        TOTAL_VEHICLES=$((TOTAL_VEHICLES + NV))
+  # Run solver (timeout 30s per instance)
+  if timeout 30 ./target/release/tig_solver vehicle_routing "$inst" "$sol" 2>/dev/null; then
+    if [ -f "$sol" ]; then
+      SOLVED=$((SOLVED + 1))
+      NV=$(grep -c "^Route" "$sol" 2>/dev/null || echo "0")
+      TOTAL_VEHICLES=$((TOTAL_VEHICLES + NV))
 
-        # Evaluate
-        eval_result=$(./target/release/tig_evaluator vehicle_routing "$inst" "$sol" 2>&1)
-        if echo "$eval_result" | grep -q "Error"; then
-          INFEASIBLE=$((INFEASIBLE + 1))
-          err_msg=$(echo "$eval_result" | head -1)
-          ERRORS="${ERRORS}${instance_name}: ${err_msg}\n"
-        else
-          FEASIBLE=$((FEASIBLE + 1))
-          dist=$(echo "$eval_result" | grep -oE '[0-9]+' | head -1)
-          if [ -n "$dist" ]; then
-            TOTAL_DIST=$((TOTAL_DIST + dist))
-          fi
+      # Evaluate
+      eval_result=$(./target/release/tig_evaluator vehicle_routing "$inst" "$sol" 2>&1)
+      if echo "$eval_result" | grep -q "Error"; then
+        INFEASIBLE=$((INFEASIBLE + 1))
+        err_msg=$(echo "$eval_result" | head -1)
+        ERRORS="${ERRORS}${instance_name}: ${err_msg}\n"
+      else
+        FEASIBLE=$((FEASIBLE + 1))
+        dist=$(echo "$eval_result" | grep -oE '[0-9]+' | head -1)
+        if [ -n "$dist" ]; then
+          TOTAL_DIST=$((TOTAL_DIST + dist))
         fi
       fi
-    else
-      ERRORS="${ERRORS}${instance_name}: solver timeout or crash\n"
     fi
-  done
+  else
+    ERRORS="${ERRORS}${instance_name}: solver timeout or crash\n"
+  fi
 done
 
 # Build route data JSON from the last feasible solution (for visualization)
 # Parse node positions from instance + routes from solution
 ROUTE_DATA=""
-for dir in "$DATASET"/n_nodes=*/; do
-  [ -d "$dir" ] || continue
-  for inst in "$dir"*.txt; do
-    [[ "$inst" == *.solution ]] && continue
-    [ -f "$inst" ] || continue
-    instance_name="$(basename "$(dirname "$inst")")/$(basename "$inst")"
-    sol="$RESULTS_DIR/$(echo "$instance_name" | tr '/' '_').solution"
-    [ -f "$sol" ] || continue
+for inst in "$DATASET"/*.txt; do
+  [[ "$inst" == *.solution ]] && continue
+  [ -f "$inst" ] || continue
+  instance_name="$(basename "$inst")"
+  sol="$RESULTS_DIR/${instance_name%.txt}.solution"
+  [ -f "$sol" ] || continue
 
-    # Only use if evaluator passes
-    eval_result=$(./target/release/tig_evaluator vehicle_routing "$inst" "$sol" 2>&1)
-    echo "$eval_result" | grep -q "Error" && continue
+  # Only use if evaluator passes
+  eval_result=$(./target/release/tig_evaluator vehicle_routing "$inst" "$sol" 2>&1)
+  echo "$eval_result" | grep -q "Error" && continue
 
-    # Extract route data
-    ROUTE_DATA=$(python3 -c "
+  # Extract route data
+  ROUTE_DATA=$(python3 -c "
 import sys
 
 # Parse instance for node positions
@@ -122,8 +117,7 @@ with open('$sol') as f:
 depot = positions.get(0, (500, 500))
 print(json.dumps({'depot': {'x': depot[0], 'y': depot[1]}, 'routes': routes}))
 " 2>/dev/null)
-    [ -n "$ROUTE_DATA" ] && break 2
-  done
+  [ -n "$ROUTE_DATA" ] && break
 done
 
 # Output JSON

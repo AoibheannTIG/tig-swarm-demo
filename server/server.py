@@ -234,7 +234,7 @@ async def get_state():
     return {
         "baseline_score": baseline,
         "best_score": best["score"] if best else baseline,
-        "best_algorithm_diff": best["algorithm_diff"] if best else "",
+        "best_algorithm_code": best["algorithm_code"] if best else "",
         "best_experiment_id": best["id"] if best else None,
         "best_route_data": json.loads(best["route_data"]) if best and best["route_data"] else None,
         "active_agents": active,
@@ -362,10 +362,10 @@ async def create_experiment(req: ExperimentCreate):
     async with db.connect() as conn:
         await conn.execute(
             """INSERT INTO experiments
-               (id, agent_id, hypothesis_id, algorithm_diff, score, feasible,
+               (id, agent_id, hypothesis_id, algorithm_code, score, feasible,
                 num_vehicles, total_distance, runtime_seconds, notes, route_data, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (exp_id, req.agent_id, req.hypothesis_id, req.algorithm_diff, req.score,
+            (exp_id, req.agent_id, req.hypothesis_id, req.algorithm_code, req.score,
              1 if req.feasible else 0, req.num_vehicles, req.total_distance,
              req.runtime_seconds, req.notes, route_data_json, timestamp),
         )

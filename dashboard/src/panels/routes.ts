@@ -108,11 +108,8 @@ export class RoutesPanel implements Panel {
     }
     this.navEl.style.display = "flex";
     const key = keys[this.currentIndex];
-    // Format: "n_nodes=100/0.txt" -> "100 nodes #1"
-    const match = key.match(/n_nodes=(\d+)\/(\d+)/);
-    const label = match
-      ? `${match[1]} nodes #${parseInt(match[2]) + 1}`
-      : key;
+    // Format: "RC1_2_1.txt" -> "RC1_2_1"
+    const label = key.replace(/\.txt$/, '');
     this.instanceLabelEl.textContent = `${label}  (${this.currentIndex + 1}/${keys.length})`;
   }
 

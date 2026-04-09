@@ -228,10 +228,8 @@ function randomBetween(min: number, max: number): number {
 
 function generateMockRoutes(): AllRouteData {
   const instances: AllRouteData = {};
-  for (const size of [50, 75, 100]) {
-    for (let i = 0; i < 5; i++) {
-      instances[`n_nodes=${size}/${i}.txt`] = generateMockInstance();
-    }
+  for (let i = 1; i <= 8; i++) {
+    instances[`RC1_2_${i}.txt`] = generateMockInstance();
   }
   return instances;
 }

@@ -45,7 +45,7 @@ class HypothesisCreate(BaseModel):
 class ExperimentCreate(BaseModel):
     agent_id: str
     hypothesis_id: Optional[str] = None
-    algorithm_diff: str = ""
+    algorithm_code: str = ""
     score: float
     feasible: bool = True
     num_vehicles: int = 0
