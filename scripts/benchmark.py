@@ -96,7 +96,7 @@ def run_instance(instance_name, dataset_path, solver, evaluator):
             capture_output=True, text=True, timeout=SOLVER_TIMEOUT,
         )
         if result.returncode != 0 or not os.path.exists(sol_path):
-            return {"instance": instance_name, "error": "solver failed"}
+            return {"instance": instance_name, "error": "solver failed", "feasible": False}
 
         routes = parse_solution_routes(sol_path)
         eval_result = subprocess.run(
@@ -114,7 +114,24 @@ def run_instance(instance_name, dataset_path, solver, evaluator):
         return {"instance": instance_name, "dist": dist, "num_vehicles": len(routes), "feasible": True, "route_data": rd}
 
     except subprocess.TimeoutExpired:
-        return {"instance": instance_name, "error": "timeout"}
+        # Solver timed out, but save_solution() may have written a partial solution
+        if os.path.exists(sol_path) and os.path.getsize(sol_path) > 0:
+            try:
+                routes = parse_solution_routes(sol_path)
+                eval_result = subprocess.run(
+                    [evaluator, "vehicle_routing", str(inst), sol_path],
+                    capture_output=True, text=True, timeout=SOLVER_TIMEOUT,
+                )
+                output = (eval_result.stdout + eval_result.stderr).strip()
+                if "Error" in output:
+                    return {"instance": instance_name, "error": output.split("\n")[0], "num_vehicles": len(routes), "feasible": False}
+                nums = re.findall(r"\d+", output)
+                dist = int(nums[0]) if nums else 0
+                rd = make_route_data(str(inst), sol_path)
+                return {"instance": instance_name, "dist": dist, "num_vehicles": len(routes), "feasible": True, "route_data": rd}
+            except Exception:
+                return {"instance": instance_name, "error": "timeout (evaluation failed)", "feasible": False}
+        return {"instance": instance_name, "error": "timeout (no solution saved)", "feasible": False}
     finally:
         if os.path.exists(sol_path):
             os.unlink(sol_path)
@@ -147,9 +164,8 @@ def main():
             r = future.result()
             if "error" in r:
                 errors.append(f"{r['instance']}: {r['error']}")
-                if not r.get("feasible", True):
-                    infeasible_count += 1
-                    solved += 1
+                infeasible_count += 1
+                solved += 1
             else:
                 solved += 1
                 feasible_count += 1
@@ -159,9 +175,8 @@ def main():
                     all_route_data[r["instance"]] = r["route_data"]
 
     all_feasible = infeasible_count == 0 and feasible_count > 0
-    # Score: total distance if all feasible, otherwise huge penalty per infeasible instance
     PENALTY_PER_INFEASIBLE = 1_000_000
-    score = total_dist + infeasible_count * PENALTY_PER_INFEASIBLE if feasible_count > 0 else float("inf")
+    score = total_dist + infeasible_count * PENALTY_PER_INFEASIBLE
 
     result = {
         "score": score,

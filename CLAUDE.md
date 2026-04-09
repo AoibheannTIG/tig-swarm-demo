@@ -102,12 +102,13 @@ Key types:
 ### Step 4: Run Benchmark
 
 ```bash
-python3 scripts/benchmark.py
+BENCH=$(python3 scripts/benchmark.py 2>/dev/null)
+echo "$BENCH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Score: {d[\"score\"]}, Feasible: {d[\"feasible\"]}, Vehicles: {d[\"num_vehicles\"]}')"
 ```
 
-This builds, runs the solver on 8 benchmark instances (200 nodes each, HG/RC1_2_* dataset), evaluates feasibility, and outputs JSON.
+This builds, runs the solver on 8 benchmark instances (200 nodes each, HG/RC1_2_* dataset), evaluates feasibility, and outputs JSON. **Save the output in `$BENCH`** — you will reuse it in Step 5.
 
-**Time limit: 5 seconds per instance.** Your solver must produce a solution within 5 seconds or that instance counts as infeasible. You can call `save_solution()` multiple times — the best solution is kept. Write anytime algorithms that improve iteratively.
+**Time limit: 5 seconds per instance.** If the solver times out but has called `save_solution()`, the saved solution is evaluated. If no solution was saved, the instance counts as infeasible. Write anytime algorithms that call `save_solution()` early and improve iteratively.
 
 **Single-threaded algorithm only.** Your algorithm must NOT use any parallelism — no `std::thread`, no `rayon`, no `crossbeam`, no spawning threads or async tasks. The solver runs as a single-threaded process. The benchmark harness itself runs all 8 instances in parallel across CPU cores, so multi-core utilization is already handled at the instance level. Focus your algorithm on being efficient within a single thread.
 
@@ -120,27 +121,10 @@ A perfect score means all 8 instances feasible with minimal total distance. A sc
 
 ### Step 5: Publish Results
 
-```bash
-BENCH=$(python3 scripts/benchmark.py 2>/dev/null)
-SCORE=$(echo "$BENCH" | python3 -c "import sys,json; print(json.load(sys.stdin)['score'])")
-FEASIBLE=$(echo "$BENCH" | python3 -c "import sys,json; print(str(json.load(sys.stdin)['feasible']).lower())")
-VEHICLES=$(echo "$BENCH" | python3 -c "import sys,json; print(json.load(sys.stdin)['num_vehicles'])")
-ROUTE_DATA=$(echo "$BENCH" | python3 -c "import sys,json; b=json.load(sys.stdin); print(json.dumps(b['route_data']) if b['route_data'] else 'null')")
-CODE=$(cat src/vehicle_routing/algorithm/mod.rs)
+Reuse the `$BENCH` output from Step 4 — do **NOT** re-run the benchmark.
 
-curl -s -X POST https://swarm-coordination-production.up.railway.app/api/experiments \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"agent_id\": \"YOUR_AGENT_ID\",
-    \"hypothesis_id\": \"YOUR_HYPOTHESIS_ID\",
-    \"algorithm_code\": $(echo "$CODE" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))"),
-    \"score\": $SCORE,
-    \"feasible\": $FEASIBLE,
-    \"num_vehicles\": $VEHICLES,
-    \"total_distance\": $SCORE,
-    \"notes\": \"Brief interpretation of your results\",
-    \"route_data\": $ROUTE_DATA
-  }"
+```bash
+echo "$BENCH" | python3 scripts/publish.py YOUR_AGENT_ID YOUR_HYPOTHESIS_ID "Brief interpretation of your results"
 ```
 
 ### Step 6: Repeat
