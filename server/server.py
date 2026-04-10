@@ -252,7 +252,8 @@ async def get_state():
         total_exp = (await (await conn.execute("SELECT COUNT(*) as c FROM experiments")).fetchone())["c"]
 
         cursor = await conn.execute("""
-            SELECT e.*, a.name as agent_name
+            SELECT e.*, a.name as agent_name,
+                   EXISTS(SELECT 1 FROM best_history bh WHERE bh.experiment_id = e.id) as is_new_best
             FROM experiments e JOIN agents a ON a.id = e.agent_id
             ORDER BY e.created_at DESC LIMIT 20
         """)
@@ -309,6 +310,7 @@ async def get_state():
                 "agent_name": e["agent_name"],
                 "score": avg_score(e["score"], e["route_data"]),
                 "feasible": bool(e["feasible"]),
+                "is_new_best": bool(e["is_new_best"]),
                 "improvement_pct": (
                     improvement_pct(baseline_avg, avg_score(e["score"], e["route_data"]))
                     if baseline_avg is not None

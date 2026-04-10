@@ -139,7 +139,7 @@ async function loadInitialState(apiUrl: string) {
         // the % when null.
         delta_vs_best_pct: null,
         num_instances: state.num_instances || 1,
-        is_new_best: false,
+        is_new_best: exp.is_new_best === true,
         hypothesis_id: null,
         notes: exp.notes || "",
         timestamp: exp.created_at || new Date().toISOString(),
