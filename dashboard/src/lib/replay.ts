@@ -9,11 +9,19 @@ export async function startReplay(
   if (playing) return;
   playing = true;
 
-  // Fetch history
+  // Fetch history + current state (for num_instances)
   let history: any[];
+  let numInstances = 1;
   try {
-    const res = await fetch(`${apiUrl}/api/replay`);
-    history = await res.json();
+    const [historyRes, stateRes] = await Promise.all([
+      fetch(`${apiUrl}/api/replay`),
+      fetch(`${apiUrl}/api/state`),
+    ]);
+    history = await historyRes.json();
+    if (stateRes.ok) {
+      const state = await stateRes.json();
+      numInstances = state.num_instances || 1;
+    }
   } catch {
     playing = false;
     return;
@@ -47,6 +55,11 @@ export async function startReplay(
     scoreEl.textContent = `Score: ${entry.score.toFixed(0)}`;
 
     if (entry.route_data) {
+      const prevScore = i > 0 ? history[i - 1].score : null;
+      const incremental =
+        prevScore != null && prevScore > 0
+          ? ((prevScore - entry.score) / prevScore) * 100
+          : null;
       handleMessage({
         type: "new_global_best",
         experiment_id: entry.experiment_id,
@@ -54,6 +67,8 @@ export async function startReplay(
         agent_id: "",
         score: entry.score,
         improvement_pct: firstScore > 0 ? ((firstScore - entry.score) / firstScore) * 100 : 0,
+        incremental_improvement_pct: incremental,
+        num_instances: numInstances,
         route_data: entry.route_data,
         timestamp: entry.created_at,
       });

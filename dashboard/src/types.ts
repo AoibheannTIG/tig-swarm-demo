@@ -21,10 +21,10 @@ export interface LeaderboardEntry {
   rank: number;
   agent_id: string;
   agent_name: string;
-  best_score: number;
-  best_experiment_id: string;
-  experiments_completed: number;
-  improvement_pct: number;
+  runs: number;
+  improvements: number;
+  // null when the agent has no runs yet
+  avg_score: number | null;
 }
 
 // WebSocket message types
@@ -97,6 +97,9 @@ export interface NewGlobalBest {
   agent_id: string;
   score: number;
   improvement_pct: number;
+  // % improvement over the previous global best (null if first ever)
+  incremental_improvement_pct: number | null;
+  num_instances: number;
   route_data: AllRouteData | null;
   timestamp: string;
 }
@@ -114,6 +117,7 @@ export interface StatsUpdate {
   hypotheses_count: number;
   best_score: number | null;
   baseline_score: number;
+  num_instances: number;
   improvement_pct: number;
   timestamp: string;
 }

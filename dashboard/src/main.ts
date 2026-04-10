@@ -92,6 +92,7 @@ async function loadInitialState(apiUrl: string) {
       hypotheses_count: state.active_hypotheses?.length || 0,
       best_score: state.best_score,
       baseline_score: state.baseline_score,
+      num_instances: state.num_instances || 1,
       improvement_pct:
         state.baseline_score > 0
           ? Number((((state.baseline_score - state.best_score) / state.baseline_score) * 100).toFixed(2))
@@ -109,6 +110,9 @@ async function loadInitialState(apiUrl: string) {
         score: state.best_score,
         improvement_pct:
           Number((((state.baseline_score - state.best_score) / state.baseline_score) * 100).toFixed(2)),
+        // No prior best to compare against on initial load
+        incremental_improvement_pct: null,
+        num_instances: state.num_instances || 1,
         route_data: state.best_route_data,
         timestamp: new Date().toISOString(),
       });

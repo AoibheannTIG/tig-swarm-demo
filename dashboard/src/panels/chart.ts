@@ -17,6 +17,7 @@ export class ChartPanel implements Panel {
   private width = 0;
   private height = 0;
   private margin = { top: 28, right: 16, bottom: 28, left: 52 };
+  private tickHandle: ReturnType<typeof setInterval> | null = null;
 
   init(container: HTMLElement) {
     container.innerHTML = `
@@ -55,6 +56,12 @@ export class ChartPanel implements Panel {
       this.redraw();
     });
     observer.observe(svgEl.parentElement!);
+
+    // Tick the chart so the x-axis keeps growing with elapsed wall time even
+    // when no new improvements are landing.
+    this.tickHandle = setInterval(() => {
+      if (this.startTime > 0 && this.data.length > 0) this.redraw();
+    }, 1000);
   }
 
   handleMessage(msg: WSMessage) {
@@ -91,16 +98,21 @@ export class ChartPanel implements Panel {
     const w = this.width - m.left - m.right;
     const h = this.height - m.top - m.bottom;
 
+    // X-axis grows with the actual elapsed time since the first data point —
+    // this lets the chart keep "scrolling" even when no new bests arrive.
+    const elapsed = Math.max(0, Date.now() - this.startTime);
+    const latestData = d3.max(this.data, (d) => d.time)!;
     const xScale = d3.scaleLinear()
-      .domain([0, Math.max(d3.max(this.data, (d) => d.time)!, 60000)])
+      .domain([0, Math.max(elapsed, latestData, 1)])
       .range([0, w]);
 
     const scoreMin = d3.min(this.data, (d) => d.score)! * 0.98;
     const scoreMax = this.baseline * 1.01;
 
-    // Invert Y: lower score = higher on chart (better)
+    // Standard Y axis: high values at the top, low at the bottom. The curve
+    // descends as the score improves.
     const yScale = d3.scaleLinear()
-      .domain([scoreMax, scoreMin])
+      .domain([scoreMin, scoreMax])
       .range([h, 0]);
 
     const chartG = this.g.append("g")
@@ -188,7 +200,7 @@ export class ChartPanel implements Panel {
         .text(tick.toFixed(0));
     });
 
-    // X axis labels (minutes)
+    // X axis labels (mm:ss elapsed)
     const xTicks = xScale.ticks(6);
     xTicks.forEach((tick) => {
       chartG.append("text")
@@ -198,7 +210,14 @@ export class ChartPanel implements Panel {
         .attr("font-size", "9px")
         .attr("font-family", "var(--mono)")
         .attr("text-anchor", "middle")
-        .text(`${Math.floor(tick / 60000)}m`);
+        .text(formatElapsed(tick));
     });
   }
+}
+
+function formatElapsed(ms: number): string {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
 }

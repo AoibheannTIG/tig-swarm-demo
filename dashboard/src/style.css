@@ -390,17 +390,37 @@ html, body {
   font-weight: 300;
   color: var(--text-bright);
   font-variant-numeric: tabular-nums;
+  line-height: 1.1;
 }
 
-.routes-delta {
+.routes-score-delta {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+
+.routes-route-distance {
   position: absolute;
-  bottom: 80px;
-  right: 20px;
-  font-size: 16px;
-  color: var(--green);
-  font-weight: 400;
-  opacity: 0;
+  bottom: 16px;
+  left: 20px;
+  text-align: left;
   z-index: 2;
+}
+
+.routes-sub-label {
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.routes-sub-value {
+  font-size: 20px;
+  font-weight: 300;
+  color: var(--text-bright);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
 }
 
 .routes-nav {
@@ -605,6 +625,16 @@ html, body {
   flex-shrink: 0;
 }
 
+.lb-runs,
+.lb-imp {
+  width: 48px;
+  text-align: right;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
 .lb-score {
   width: 80px;
   text-align: right;
@@ -619,12 +649,35 @@ html, body {
   animation: scorePulse 0.6s ease;
 }
 
-.lb-exp {
-  width: 40px;
+/* Sortable header buttons reuse the column widths above so columns line up
+   with the data rows. */
+.leaderboard-header .lb-sortable {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
   text-align: right;
-  color: var(--text-dim);
-  font-size: 11px;
   flex-shrink: 0;
+  transition: color 0.15s ease;
+}
+
+.leaderboard-header .lb-sortable:hover {
+  color: var(--text-bright);
+}
+
+.leaderboard-header .lb-sortable--active {
+  color: var(--cyan);
+}
+
+.lb-arrow {
+  display: inline-block;
+  min-width: 8px;
+  font-size: 9px;
 }
 
 /* ── Animations ── */

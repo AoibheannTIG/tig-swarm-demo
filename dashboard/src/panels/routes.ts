@@ -2,11 +2,6 @@ import * as d3 from "d3";
 import type { Panel, WSMessage, RouteData, AllRouteData, RoutePoint } from "../types";
 import { getRouteColor } from "../lib/colors";
 
-interface DrawOptions {
-  ghost?: boolean;
-  animate?: boolean;
-}
-
 const routeLine = d3.line<RoutePoint>()
   .x((d) => d.x)
   .y((d) => d.y)
@@ -17,21 +12,39 @@ function fullPath(data: RouteData, route: { path: RoutePoint[] }): RoutePoint[] 
   return [depot, ...route.path, depot];
 }
 
+// Sum of Euclidean distances over every leg of every vehicle's route, with the
+// depot stitched onto each end. Matches how the solver computes route length.
+function computeRouteDistance(data: RouteData): number {
+  let total = 0;
+  for (const route of data.routes) {
+    const path = fullPath(data, route);
+    for (let i = 0; i < path.length - 1; i++) {
+      const dx = path[i + 1].x - path[i].x;
+      const dy = path[i + 1].y - path[i].y;
+      total += Math.sqrt(dx * dx + dy * dy);
+    }
+  }
+  return total;
+}
+
 export class RoutesPanel implements Panel {
   private svg!: any;
   private routeGroup!: any;
-  private ghostGroup!: any;
   private customerGroup!: any;
   private depotGroup!: any;
   private scoreEl!: HTMLElement;
-  private deltaEl!: HTMLElement;
+  private scoreDeltaEl!: HTMLElement;
+  private routeDistanceEl!: HTMLElement;
   private instanceLabelEl!: HTMLElement;
   private navEl!: HTMLElement;
 
   private allInstances: AllRouteData = {};
   private currentIndex = 0;
   private currentRouteData: RouteData | null = null;
-  private ghostTimeout: ReturnType<typeof setTimeout> | null = null;
+  private numInstances = 1;
+  // Raw experiment score (sum across all instances). The displayed SCORE is
+  // this divided by numInstances so it matches the leaderboard's avg metric.
+  private rawScore: number | null = null;
 
   private get instanceKeys(): string[] {
     return Object.keys(this.allInstances).sort();
@@ -47,16 +60,21 @@ export class RoutesPanel implements Panel {
           <span class="routes-instance-label" id="routes-instance-label"></span>
           <button class="routes-nav-btn" id="routes-next">&rsaquo;</button>
         </div>
-        <div class="routes-score">
-          <div class="routes-score-label">TOTAL DISTANCE</div>
-          <div class="routes-score-value" id="routes-score">---</div>
+        <div class="routes-route-distance">
+          <div class="routes-sub-label">ROUTE DISTANCE</div>
+          <div class="routes-sub-value" id="routes-route-distance">---</div>
         </div>
-        <div class="routes-delta" id="routes-delta"></div>
+        <div class="routes-score">
+          <div class="routes-score-label">SCORE</div>
+          <div class="routes-score-value" id="routes-score">---</div>
+          <div class="routes-score-delta" id="routes-score-delta"></div>
+        </div>
       </div>
     `;
 
     this.scoreEl = document.getElementById("routes-score")!;
-    this.deltaEl = document.getElementById("routes-delta")!;
+    this.scoreDeltaEl = document.getElementById("routes-score-delta")!;
+    this.routeDistanceEl = document.getElementById("routes-route-distance")!;
     this.instanceLabelEl = document.getElementById("routes-instance-label")!;
     this.navEl = document.getElementById("routes-nav")!;
 
@@ -75,12 +93,6 @@ export class RoutesPanel implements Panel {
     merge.append("feMergeNode").attr("in", "blur");
     merge.append("feMergeNode").attr("in", "SourceGraphic");
 
-    const radGrad = defs.append("radialGradient").attr("id", "shockwave-grad");
-    radGrad.append("stop").attr("offset", "0%").attr("stop-color", "#00e5ff").attr("stop-opacity", "0");
-    radGrad.append("stop").attr("offset", "70%").attr("stop-color", "#00e5ff").attr("stop-opacity", "0.2");
-    radGrad.append("stop").attr("offset", "100%").attr("stop-color", "#00e5ff").attr("stop-opacity", "0");
-
-    this.ghostGroup = this.svg.append("g").attr("class", "ghost-routes");
     this.routeGroup = this.svg.append("g").attr("class", "routes");
     this.customerGroup = this.svg.append("g").attr("class", "customers");
     this.depotGroup = this.svg.append("g").attr("class", "depot");
@@ -97,7 +109,7 @@ export class RoutesPanel implements Panel {
     if (keys.length === 0) return;
     this.currentIndex = (this.currentIndex + delta + keys.length) % keys.length;
     this.updateInstanceLabel();
-    this.drawRoutes(this.allInstances[keys[this.currentIndex]]);
+    this.showInstance(this.allInstances[keys[this.currentIndex]]);
   }
 
   private updateInstanceLabel() {
@@ -108,184 +120,105 @@ export class RoutesPanel implements Panel {
     }
     this.navEl.style.display = "flex";
     const key = keys[this.currentIndex];
-    // Format: "RC1_2_1.txt" -> "RC1_2_1"
-    const label = key.replace(/\.txt$/, '');
+    const label = key.replace(/\.txt$/, "");
     this.instanceLabelEl.textContent = `${label}  (${this.currentIndex + 1}/${keys.length})`;
   }
 
   handleMessage(msg: WSMessage) {
+    if (msg.type === "stats_update") {
+      if (msg.num_instances) this.numInstances = msg.num_instances;
+      // Show score even before any route data has arrived. Once route data
+      // exists, new_global_best is the source of truth.
+      if (msg.best_score != null && !this.currentRouteData) {
+        this.rawScore = msg.best_score;
+        this.scoreEl.textContent = (msg.best_score / Math.max(this.numInstances, 1)).toFixed(1);
+      }
+    }
+
     if (msg.type === "new_global_best" && msg.route_data) {
-      this.handleNewBest(msg.route_data, msg.score, msg.improvement_pct);
-    }
-    if (msg.type === "stats_update" && msg.best_score && !this.currentRouteData) {
-      this.scoreEl.textContent = msg.best_score.toFixed(1);
+      if (msg.num_instances) this.numInstances = msg.num_instances;
+      this.rawScore = msg.score;
+      this.allInstances = msg.route_data;
+
+      const keys = this.instanceKeys;
+      if (this.currentIndex >= keys.length) this.currentIndex = 0;
+
+      this.updateInstanceLabel();
+      this.showInstance(this.allInstances[keys[this.currentIndex]]);
+
+      // SCORE = avg per-instance score for the global best algorithm
+      this.scoreEl.textContent = (msg.score / Math.max(this.numInstances, 1)).toFixed(1);
+
+      // % improvement vs the previous global best. By construction this fires
+      // only on a new best, so the value is positive (lower score = better).
+      if (msg.incremental_improvement_pct != null) {
+        const v = msg.incremental_improvement_pct;
+        this.scoreDeltaEl.textContent = `+${v.toFixed(2)}% vs prev best`;
+        this.scoreDeltaEl.style.color = "var(--green)";
+      } else {
+        this.scoreDeltaEl.textContent = "first global best";
+        this.scoreDeltaEl.style.color = "var(--text-dim)";
+      }
     }
   }
 
-  private handleNewBest(rawData: AllRouteData, score: number, improvementPct: number) {
-    this.allInstances = rawData;
-    const keys = this.instanceKeys;
-
-    if (this.currentIndex >= keys.length) {
-      this.currentIndex = 0;
-    }
-
-    const data = rawData[keys[this.currentIndex]];
-    this.updateInstanceLabel();
-    this.animateNewBest(data, score, improvementPct);
-  }
-
-  private animateNewBest(data: RouteData, score: number, improvementPct: number) {
-    const oldData = this.currentRouteData;
+  // Immediate, non-animated draw of one instance's route data.
+  private showInstance(data: RouteData) {
     this.currentRouteData = data;
 
-    // Move current routes to ghost layer
-    if (oldData) {
-      if (this.ghostTimeout) clearTimeout(this.ghostTimeout);
-      this.ghostGroup.selectAll("*").remove();
-      this.drawRoutes(oldData, { ghost: true, target: this.ghostGroup });
-      this.ghostGroup.transition().duration(600).style("opacity", 0.06);
-      this.ghostTimeout = setTimeout(() => this.ghostGroup.selectAll("*").remove(), 12000);
-    }
-
-    this.drawRoutes(data, { animate: true });
-    this.shockwave(data.depot.x, data.depot.y);
-
-    this.scoreEl.textContent = score.toFixed(1);
-
-    this.deltaEl.textContent = `+${improvementPct.toFixed(1)}% improvement`;
-    this.deltaEl.style.opacity = "1";
-    this.deltaEl.style.transform = "translateY(0)";
-    setTimeout(() => {
-      this.deltaEl.style.transition = "opacity 1s ease, transform 1s ease";
-      this.deltaEl.style.opacity = "0";
-      this.deltaEl.style.transform = "translateY(-10px)";
-      setTimeout(() => { this.deltaEl.style.transition = ""; }, 1000);
-    }, 2500);
-  }
-
-  private drawRoutes(
-    data: RouteData,
-    opts?: DrawOptions & { target?: any },
-  ) {
-    const { ghost = false, animate = false, target } = opts ?? {};
-    const group = target ?? this.routeGroup;
-
-    if (!target) {
-      this.routeGroup.selectAll("*").remove();
-      this.customerGroup.selectAll("*").remove();
-      this.depotGroup.selectAll("*").remove();
-    }
+    this.routeGroup.selectAll("*").remove();
+    this.customerGroup.selectAll("*").remove();
+    this.depotGroup.selectAll("*").remove();
 
     data.routes.forEach((route, i) => {
       const path = fullPath(data, route);
       const color = getRouteColor(i);
 
-      // Glow trail (skip for ghost)
-      if (!ghost) {
-        const glow = group.append("path")
-          .datum(path)
-          .attr("d", routeLine as any)
-          .attr("fill", "none")
-          .attr("stroke", color)
-          .attr("stroke-width", 20)
-          .attr("filter", "url(#route-glow)");
-
-        if (animate) {
-          glow.attr("stroke-opacity", 0)
-            .transition().delay(i * 100).duration(800)
-            .attr("stroke-opacity", 0.1);
-        } else {
-          glow.attr("stroke-opacity", 0.1);
-        }
-      }
-
-      // Main path
-      const mainPath = group.append("path")
+      // Glow halo
+      this.routeGroup.append("path")
         .datum(path)
         .attr("d", routeLine as any)
         .attr("fill", "none")
         .attr("stroke", color)
-        .attr("stroke-width", ghost ? 5 : 8)
-        .attr("stroke-opacity", ghost ? 0.3 : 0.85)
-        .attr("class", ghost ? "" : "route-flowing");
+        .attr("stroke-width", 80)
+        .attr("stroke-opacity", 0.1)
+        .attr("filter", "url(#route-glow)");
 
-      if (animate) {
-        const node = mainPath.node()!;
-        const totalLength = node.getTotalLength();
-        mainPath
-          .attr("stroke-dasharray", `${totalLength}`)
-          .attr("stroke-dashoffset", totalLength)
-          .transition()
-          .delay(i * 100)
-          .duration(1200)
-          .ease(d3.easeCubicInOut)
-          .attr("stroke-dashoffset", 0)
-          .on("end", function (this: SVGPathElement) {
-            d3.select(this)
-              .attr("stroke-dasharray", "20 8")
-              .attr("stroke-dashoffset", 0);
-          });
-      } else {
-        mainPath.attr("stroke-dasharray", ghost ? "none" : "20 8");
-      }
+      // Main path
+      this.routeGroup.append("path")
+        .datum(path)
+        .attr("d", routeLine as any)
+        .attr("fill", "none")
+        .attr("stroke", color)
+        .attr("stroke-width", 32)
+        .attr("stroke-opacity", 0.9)
+        .attr("stroke-dasharray", "80 32")
+        .attr("class", "route-flowing");
 
-      // Customers (skip for ghost)
-      if (!ghost) {
-        route.path.forEach((pt) => {
-          const circle = this.customerGroup.append("circle")
-            .attr("cx", pt.x)
-            .attr("cy", pt.y)
-            .attr("fill", color)
-            .attr("opacity", 0.7);
-
-          if (animate) {
-            circle.attr("r", 0)
-              .transition().delay(i * 100 + 400).duration(300)
-              .attr("r", 10);
-          } else {
-            circle.attr("r", 10);
-          }
-        });
-      }
+      // Customers
+      route.path.forEach((pt) => {
+        this.customerGroup.append("circle")
+          .attr("cx", pt.x)
+          .attr("cy", pt.y)
+          .attr("r", 40)
+          .attr("fill", color)
+          .attr("opacity", 0.75);
+      });
     });
 
-    // Depot (skip for ghost)
-    if (!ghost) {
-      const depotSize = 25;
-      const depot = this.depotGroup.append("rect")
-        .attr("x", data.depot.x - depotSize / 2)
-        .attr("y", data.depot.y - depotSize / 2)
-        .attr("width", depotSize)
-        .attr("height", depotSize)
-        .attr("fill", "#fff")
-        .attr("transform", `rotate(45, ${data.depot.x}, ${data.depot.y})`)
-        .attr("class", "depot-pulse");
+    // Depot
+    const depotSize = 100;
+    this.depotGroup.append("rect")
+      .attr("x", data.depot.x - depotSize / 2)
+      .attr("y", data.depot.y - depotSize / 2)
+      .attr("width", depotSize)
+      .attr("height", depotSize)
+      .attr("fill", "#fff")
+      .attr("opacity", 0.9)
+      .attr("transform", `rotate(45, ${data.depot.x}, ${data.depot.y})`)
+      .attr("class", "depot-pulse");
 
-      if (animate) {
-        depot.attr("opacity", 0).transition().duration(400).attr("opacity", 0.9);
-      } else {
-        depot.attr("opacity", 0.9);
-      }
-    }
-  }
-
-  private shockwave(cx: number, cy: number) {
-    const ring = this.svg.append("circle")
-      .attr("cx", cx)
-      .attr("cy", cy)
-      .attr("r", 20)
-      .attr("fill", "none")
-      .attr("stroke", "#00e5ff")
-      .attr("stroke-width", 5)
-      .attr("stroke-opacity", 0.4);
-
-    ring.transition()
-      .duration(1000)
-      .ease(d3.easeCubicOut)
-      .attr("r", 400)
-      .attr("stroke-opacity", 0)
-      .attr("stroke-width", 1)
-      .remove();
+    // ROUTE DISTANCE = total Euclidean distance for the currently shown instance
+    this.routeDistanceEl.textContent = computeRouteDistance(data).toFixed(1);
   }
 }

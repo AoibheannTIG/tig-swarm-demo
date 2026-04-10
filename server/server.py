@@ -39,6 +39,13 @@ def get_baseline(config: dict) -> float:
     return float(config.get("baseline_score", str(DEFAULT_BASELINE)))
 
 
+def get_num_instances(config: dict) -> int:
+    try:
+        return len(json.loads(config.get("benchmark_instances", "[]"))) or 1
+    except Exception:
+        return 1
+
+
 async def verify_admin(req: AdminAuth) -> None:
     config = await get_config_cached()
     if req.admin_key != config.get("admin_key", "ads-2026"):
@@ -131,6 +138,7 @@ async def periodic_stats():
                 "hypotheses_count": total_hyp,
                 "best_score": best["score"] if best else None,
                 "baseline_score": baseline,
+                "num_instances": get_num_instances(config),
                 "improvement_pct": improvement_pct(baseline, best["score"]) if best else 0,
                 "timestamp": now(),
             })
@@ -229,7 +237,7 @@ async def get_state():
         """)
         succeeded_hypotheses = [dict(row) for row in await cursor.fetchall()]
 
-        leaderboard = await db.compute_leaderboard(conn, baseline)
+        leaderboard = await db.compute_leaderboard(conn, baseline, get_num_instances(config))
 
     return {
         "baseline_score": baseline,
@@ -237,6 +245,7 @@ async def get_state():
         "best_algorithm_code": best["algorithm_code"] if best else "",
         "best_experiment_id": best["id"] if best else None,
         "best_route_data": json.loads(best["route_data"]) if best and best["route_data"] else None,
+        "num_instances": get_num_instances(config),
         "active_agents": active,
         "total_experiments": total_exp,
         "recent_experiments": [
@@ -385,6 +394,12 @@ async def create_experiment(req: ExperimentCreate):
 
         prev_best = await db.get_global_best(conn)
         is_new_best = req.feasible and (prev_best is None or req.score < prev_best["score"])
+        # % improvement of this best over the previous best (None if first ever)
+        incremental_pct: float | None = None
+        if is_new_best and prev_best is not None and prev_best["score"] > 0:
+            incremental_pct = round(
+                ((prev_best["score"] - req.score) / prev_best["score"]) * 100, 2
+            )
 
         if is_new_best:
             await conn.execute(
@@ -401,7 +416,7 @@ async def create_experiment(req: ExperimentCreate):
             )
 
         await conn.commit()
-        leaderboard = await db.compute_leaderboard(conn, baseline)
+        leaderboard = await db.compute_leaderboard(conn, baseline, get_num_instances(config))
         rank = next((e["rank"] for e in leaderboard if e["agent_id"] == req.agent_id), 0)
 
     imp = improvement_pct(baseline, req.score)
@@ -437,6 +452,8 @@ async def create_experiment(req: ExperimentCreate):
             "agent_id": req.agent_id,
             "score": req.score,
             "improvement_pct": imp,
+            "incremental_improvement_pct": incremental_pct,
+            "num_instances": get_num_instances(config),
             "route_data": req.route_data,
             "timestamp": timestamp,
         })
@@ -463,7 +480,7 @@ async def get_leaderboard():
     config = await get_config_cached()
     baseline = get_baseline(config)
     async with db.connect() as conn:
-        leaderboard = await db.compute_leaderboard(conn, baseline)
+        leaderboard = await db.compute_leaderboard(conn, baseline, get_num_instances(config))
     return {"updated_at": now(), "baseline_score": baseline, "entries": leaderboard}
 
 

@@ -149,28 +149,42 @@ async def get_all_agent_names(conn: aiosqlite.Connection) -> set[str]:
     return {row["name"] for row in await cursor.fetchall()}
 
 
-async def compute_leaderboard(conn: aiosqlite.Connection, baseline_score: float) -> list[dict]:
-    cursor = await conn.execute("""
+async def compute_leaderboard(
+    conn: aiosqlite.Connection,
+    baseline_score: float,
+    num_instances: int,
+) -> list[dict]:
+    # runs         = total experiments published by the agent (any feasibility)
+    # improvements = times this agent set a new global best (from best_history)
+    # avg_score    = mean per-instance score across all the agent's runs.
+    #                Each run's score is sum-over-instances of (distance if feasible
+    #                else 1M penalty), so dividing by num_instances gives the mean
+    #                per-instance score for that run; AVG then means across runs.
+    #                NULL if the agent has no runs at all.
+    divisor = max(num_instances, 1)
+    cursor = await conn.execute(
+        f"""
         SELECT
-            a.id as agent_id, a.name as agent_name, a.experiments_completed,
-            MIN(e.score) as best_score, e.id as best_experiment_id
+            a.id   as agent_id,
+            a.name as agent_name,
+            COUNT(e.id) as runs,
+            AVG(e.score) / {divisor} as avg_score,
+            (SELECT COUNT(*) FROM best_history bh WHERE bh.agent_name = a.name) as improvements
         FROM agents a
-        JOIN experiments e ON e.agent_id = a.id AND e.feasible = 1
+        LEFT JOIN experiments e ON e.agent_id = a.id
         GROUP BY a.id
-        ORDER BY best_score ASC
-    """)
+        ORDER BY avg_score IS NULL, avg_score ASC, a.name ASC
+        """
+    )
     rows = await cursor.fetchall()
     return [
         {
             "rank": i + 1,
             "agent_id": row["agent_id"],
             "agent_name": row["agent_name"],
-            "best_score": row["best_score"],
-            "best_experiment_id": row["best_experiment_id"],
-            "experiments_completed": row["experiments_completed"],
-            "improvement_pct": round(
-                ((baseline_score - row["best_score"]) / baseline_score) * 100, 2
-            ) if baseline_score > 0 else 0,
+            "runs": row["runs"],
+            "improvements": row["improvements"],
+            "avg_score": row["avg_score"],
         }
         for i, row in enumerate(rows)
     ]

@@ -46,6 +46,8 @@ interface MockAgent {
   name: string;
   bestScore: number;
   experiments: number;
+  improvements: number;
+  scoreSum: number;
 }
 
 export class MockDataGenerator {
@@ -88,6 +90,8 @@ export class MockDataGenerator {
         name: `${adj}-${noun}`,
         bestScore: Infinity,
         experiments: 0,
+        improvements: 0,
+        scoreSum: 0,
       };
       this.agents.push(agent);
       agentCount++;
@@ -141,13 +145,16 @@ export class MockDataGenerator {
         : -randomBetween(10, 100);
       const score = Math.max(800, this.bestScore + delta);
       const isNewBest = score < this.bestScore;
+      const prevBestForBroadcast = this.bestScore;
 
       if (isNewBest) {
         this.bestScore = score;
+        agent.improvements++;
       }
       if (score < agent.bestScore) {
         agent.bestScore = score;
       }
+      agent.scoreSum += score;
 
       this.emit({
         type: "experiment_published",
@@ -175,6 +182,11 @@ export class MockDataGenerator {
           improvement_pct: Number(
             (((this.baseline - score) / this.baseline) * 100).toFixed(2),
           ),
+          incremental_improvement_pct:
+            prevBestForBroadcast > 0 && prevBestForBroadcast < Infinity
+              ? Number((((prevBestForBroadcast - score) / prevBestForBroadcast) * 100).toFixed(2))
+              : null,
+          num_instances: 8,
           route_data: generateMockRoutes(),
           timestamp: this.now(),
         });
@@ -182,18 +194,23 @@ export class MockDataGenerator {
 
       // Emit leaderboard
       const entries: LeaderboardEntry[] = this.agents
-        .filter((a) => a.bestScore < Infinity)
-        .sort((a, b) => a.bestScore - b.bestScore)
-        .map((a, i) => ({
+        .map((a) => ({
+          agent: a,
+          avg: a.experiments > 0 ? a.scoreSum / a.experiments : null,
+        }))
+        .sort((a, b) => {
+          if (a.avg === null && b.avg === null) return 0;
+          if (a.avg === null) return 1;
+          if (b.avg === null) return -1;
+          return a.avg - b.avg;
+        })
+        .map(({ agent: a, avg }, i) => ({
           rank: i + 1,
           agent_id: a.id,
           agent_name: a.name,
-          best_score: a.bestScore,
-          best_experiment_id: `exp-best-${a.id}`,
-          experiments_completed: a.experiments,
-          improvement_pct: Number(
-            (((this.baseline - a.bestScore) / this.baseline) * 100).toFixed(2),
-          ),
+          runs: a.experiments,
+          improvements: a.improvements,
+          avg_score: avg,
         }));
 
       this.emit({
@@ -214,6 +231,7 @@ export class MockDataGenerator {
       hypotheses_count: this.totalHypotheses,
       best_score: this.bestScore < this.baseline ? this.bestScore : null,
       baseline_score: this.baseline,
+      num_instances: 8,
       improvement_pct: Number(
         (((this.baseline - this.bestScore) / this.baseline) * 100).toFixed(2),
       ),
