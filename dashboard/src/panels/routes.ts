@@ -241,11 +241,13 @@ export class RoutesPanel implements Panel {
       // Score is already a per-instance average from the server.
       this.scoreEl.textContent = msg.score.toFixed(1);
 
-      // % improvement vs the previous global best. By construction this fires
-      // only on a new best, so the value is positive (lower score = better).
+      // incremental_improvement_pct is improvement-positive. This fires only
+      // on a new best, so the value is positive — which we display as a
+      // negative score change ("-X.XXXXX%") in green.
       if (msg.incremental_improvement_pct != null) {
-        const v = msg.incremental_improvement_pct;
-        this.scoreDeltaEl.textContent = `+${v.toFixed(5)}% vs prev best`;
+        const scoreChange = -msg.incremental_improvement_pct;
+        const sign = scoreChange >= 0 ? "+" : "";
+        this.scoreDeltaEl.textContent = `${sign}${scoreChange.toFixed(5)}% vs prev best`;
         this.scoreDeltaEl.style.color = "var(--green)";
       } else {
         this.scoreDeltaEl.textContent = "first global best";

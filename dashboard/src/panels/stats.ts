@@ -70,10 +70,16 @@ export class StatsPanel implements Panel {
       counterTween(this.experimentsEl, msg.total_experiments);
       counterTween(this.hypothesesEl, msg.hypotheses_count);
 
+      // improvement_pct is improvement-positive (positive = score dropped).
+      // We display it as a score change: an improvement of 5% shows "-5.0%"
+      // in green, a 5% regression shows "+5.0%" in red — the sign tracks the
+      // direction of the score, not the direction of improvement.
       const impEl = this.improvementEl;
       const target = msg.improvement_pct;
-      impEl.textContent = `${target > 0 ? "+" : ""}${target.toFixed(1)}%`;
-      if (target > 0) impEl.style.color = "var(--green)";
+      const scoreChange = -target;
+      const sign = scoreChange >= 0 ? "+" : "";
+      impEl.textContent = `${sign}${scoreChange.toFixed(1)}%`;
+      impEl.style.color = target > 0 ? "var(--green)" : target < 0 ? "var(--red)" : "";
     }
 
     if (msg.type === "agent_joined") {

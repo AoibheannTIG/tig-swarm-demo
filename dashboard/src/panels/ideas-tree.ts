@@ -116,11 +116,15 @@ export class IdeasTree {
 
       case "experiment_published":
         if (msg.is_new_best) {
+          // improvement_pct is improvement-positive; display as score change
+          // so an improvement of 3.2% reads "-3.2%".
+          const scoreChange = -msg.improvement_pct;
+          const sign = scoreChange >= 0 ? "+" : "";
           this.addFeedItem({
             id: msg.experiment_id,
             agentName: msg.agent_name,
             agentId: msg.agent_id,
-            content: `NEW BEST: Score ${msg.score.toFixed(0)} (${msg.improvement_pct > 0 ? "+" : ""}${msg.improvement_pct.toFixed(1)}% improvement)`,
+            content: `NEW BEST: Score ${msg.score.toFixed(0)} (${sign}${scoreChange.toFixed(1)}%)`,
             msgType: "milestone",
             timestamp: msg.timestamp,
           });
