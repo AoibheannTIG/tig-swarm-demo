@@ -13,7 +13,6 @@ export class ChartPanel implements Panel {
   private g!: any;
   private data: DataPoint[] = [];
   private startTime = 0; // set from first data point
-  private baseline = 1850.5;
   private width = 0;
   private height = 0;
   private margin = { top: 28, right: 16, bottom: 28, left: 52 };
@@ -72,30 +71,33 @@ export class ChartPanel implements Panel {
       return;
     }
 
-    if (msg.type === "stats_update" && msg.baseline_score) {
-      this.baseline = msg.baseline_score;
-    }
-
     if (msg.type === "experiment_published" && msg.feasible) {
       // Use server timestamp if available, otherwise wall clock
       const msgTime = msg.timestamp ? new Date(msg.timestamp).getTime() : Date.now();
       if (this.startTime === 0) this.startTime = msgTime;
       const time = msgTime - this.startTime;
 
-      // Plot per-instance average score so the chart matches the routes panel.
-      const avgScore = msg.score / Math.max(1, msg.num_instances);
-
-      // Only track the running best
-      const currentBest = this.data.length > 0 ? this.data[this.data.length - 1].score : this.baseline;
-      const newBest = Math.min(currentBest, avgScore);
-      if (newBest < currentBest || this.data.length === 0) {
+      // Score is already a per-instance average from the server.
+      if (this.data.length === 0) {
+        // The very first feasible run is the baseline — seed the chart.
         this.data.push({
           time: Math.max(0, time),
-          score: newBest,
+          score: msg.score,
           agentName: msg.agent_name,
           isBreakthrough: msg.is_new_best,
         });
         this.redraw();
+      } else {
+        const currentBest = this.data[this.data.length - 1].score;
+        if (msg.score < currentBest) {
+          this.data.push({
+            time: Math.max(0, time),
+            score: msg.score,
+            agentName: msg.agent_name,
+            isBreakthrough: msg.is_new_best,
+          });
+          this.redraw();
+        }
       }
     }
   }

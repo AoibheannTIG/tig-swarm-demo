@@ -93,23 +93,19 @@ async function loadInitialState(apiUrl: string) {
       best_score: state.best_score,
       baseline_score: state.baseline_score,
       num_instances: state.num_instances || 1,
-      improvement_pct:
-        state.baseline_score > 0
-          ? Number((((state.baseline_score - state.best_score) / state.baseline_score) * 100).toFixed(2))
-          : 0,
+      improvement_pct: state.improvement_pct || 0,
       timestamp: new Date().toISOString(),
     });
 
     // Emit route data if available
-    if (state.best_route_data && state.best_score < state.baseline_score) {
+    if (state.best_route_data && state.best_score != null) {
       handleMessage({
         type: "new_global_best",
         experiment_id: state.best_experiment_id || "",
         agent_name: "swarm",
         agent_id: "",
         score: state.best_score,
-        improvement_pct:
-          Number((((state.baseline_score - state.best_score) / state.baseline_score) * 100).toFixed(2)),
+        improvement_pct: state.improvement_pct || 0,
         // No prior best to compare against on initial load
         incremental_improvement_pct: null,
         num_instances: state.num_instances || 1,

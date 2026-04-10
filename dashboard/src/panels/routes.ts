@@ -218,10 +218,11 @@ export class RoutesPanel implements Panel {
     if (msg.type === "stats_update") {
       if (msg.num_instances) this.numInstances = msg.num_instances;
       // Show score even before any route data has arrived. Once route data
-      // exists, new_global_best is the source of truth.
+      // exists, new_global_best is the source of truth. Score is already a
+      // per-instance average from the server.
       if (msg.best_score != null && !this.currentRouteData) {
         this.rawScore = msg.best_score;
-        this.scoreEl.textContent = (msg.best_score / Math.max(this.numInstances, 1)).toFixed(1);
+        this.scoreEl.textContent = msg.best_score.toFixed(1);
       }
     }
 
@@ -237,8 +238,8 @@ export class RoutesPanel implements Panel {
       this.updateInstanceLabel();
       this.showInstance(this.allInstances[keys[this.currentIndex]]);
 
-      // SCORE = avg per-instance score for the global best algorithm
-      this.scoreEl.textContent = (msg.score / Math.max(this.numInstances, 1)).toFixed(1);
+      // Score is already a per-instance average from the server.
+      this.scoreEl.textContent = msg.score.toFixed(1);
 
       // % improvement vs the previous global best. By construction this fires
       // only on a new best, so the value is positive (lower score = better).

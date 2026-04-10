@@ -86,7 +86,6 @@ CREATE INDEX IF NOT EXISTS idx_msg_created ON messages(created_at);
 """
 
 DEFAULT_CONFIG = {
-    "baseline_score": "1850.5",
     "benchmark_instances": '["RC1_2_1","RC1_2_2","RC1_2_3","RC1_2_4","RC1_2_5","RC1_2_6","RC1_2_7","RC1_2_8"]',
     "admin_key": "ads-2026",
 }
@@ -151,7 +150,6 @@ async def get_all_agent_names(conn: aiosqlite.Connection) -> set[str]:
 
 async def compute_leaderboard(
     conn: aiosqlite.Connection,
-    baseline_score: float,
     num_instances: int,
 ) -> list[dict]:
     # runs         = total experiments published by the agent (any feasibility)

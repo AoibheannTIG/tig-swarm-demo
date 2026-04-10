@@ -122,8 +122,10 @@ export interface StatsUpdate {
   active_agents: number;
   total_experiments: number;
   hypotheses_count: number;
+  // Both per-instance averages. null until the first feasible experiment
+  // lands — there is no reference point before then.
   best_score: number | null;
-  baseline_score: number;
+  baseline_score: number | null;
   num_instances: number;
   improvement_pct: number;
   timestamp: string;

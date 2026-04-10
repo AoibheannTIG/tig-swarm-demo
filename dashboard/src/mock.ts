@@ -53,8 +53,10 @@ interface MockAgent {
 export class MockDataGenerator {
   private handlers: Handler[] = [];
   private agents: MockAgent[] = [];
-  private bestScore = 1850.5;
-  private baseline = 1850.5;
+  // bestScore / baseline are set from the first emitted experiment — there is
+  // no reference point before anything has been run.
+  private bestScore: number | null = null;
+  private baseline: number | null = null;
   private totalExperiments = 0;
   private totalHypotheses = 0;
   private hypIndex = 0;
@@ -138,14 +140,22 @@ export class MockDataGenerator {
       this.totalExperiments++;
       agent.experiments++;
 
-      // Score: sometimes better, sometimes worse
-      const improvement = Math.random() > 0.3;
-      const delta = improvement
-        ? randomBetween(5, 80)
-        : -randomBetween(10, 100);
-      const score = Math.max(800, this.bestScore + delta);
-      const isNewBest = score < this.bestScore;
-      const prevBestForBroadcast = this.bestScore;
+      // First experiment seeds both baseline and bestScore — everything after
+      // is measured against it.
+      let score: number;
+      if (this.baseline === null) {
+        score = randomBetween(1800, 2000);
+        this.baseline = score;
+        this.bestScore = score;
+      } else {
+        const improvement = Math.random() > 0.3;
+        const delta = improvement
+          ? randomBetween(5, 80)
+          : -randomBetween(10, 100);
+        score = Math.max(800, this.bestScore! + delta);
+      }
+      const isNewBest = score < this.bestScore!;
+      const prevBestForBroadcast = this.bestScore!;
 
       if (isNewBest) {
         this.bestScore = score;
@@ -158,11 +168,14 @@ export class MockDataGenerator {
 
       // Semantic % improvement vs prev best: positive = score dropped.
       const deltaVsBest =
-        prevBestForBroadcast > 0 && prevBestForBroadcast < Infinity
+        prevBestForBroadcast > 0 && prevBestForBroadcast !== score
           ? Number(
               (((prevBestForBroadcast - score) / prevBestForBroadcast) * 100).toFixed(6),
             )
           : null;
+      const impPct = Number(
+        (((this.baseline - score) / this.baseline) * 100).toFixed(2),
+      );
       this.emit({
         type: "experiment_published",
         experiment_id: `exp-${this.totalExperiments}`,
@@ -170,14 +183,12 @@ export class MockDataGenerator {
         agent_id: agent.id,
         score,
         feasible: Math.random() > 0.1,
-        improvement_pct: Number(
-          (((this.baseline - score) / this.baseline) * 100).toFixed(2),
-        ),
+        improvement_pct: impPct,
         delta_vs_best_pct: deltaVsBest,
         num_instances: 8,
         is_new_best: isNewBest,
         hypothesis_id: `hyp-${Math.floor(Math.random() * Math.max(1, this.totalHypotheses))}`,
-        notes: improvement ? "Improved routing efficiency" : "Score regressed",
+        notes: this.totalExperiments === 1 ? "Baseline established" : (score < prevBestForBroadcast ? "Improved routing efficiency" : "Score regressed"),
         timestamp: this.now(),
       });
 
@@ -188,11 +199,9 @@ export class MockDataGenerator {
           agent_name: agent.name,
           agent_id: agent.id,
           score,
-          improvement_pct: Number(
-            (((this.baseline - score) / this.baseline) * 100).toFixed(2),
-          ),
+          improvement_pct: impPct,
           incremental_improvement_pct:
-            prevBestForBroadcast > 0 && prevBestForBroadcast < Infinity
+            prevBestForBroadcast > 0 && prevBestForBroadcast !== score
               ? Number((((prevBestForBroadcast - score) / prevBestForBroadcast) * 100).toFixed(2))
               : null,
           num_instances: 8,
@@ -233,17 +242,19 @@ export class MockDataGenerator {
   }
 
   private emitStats() {
+    const impPct =
+      this.baseline !== null && this.bestScore !== null
+        ? Number((((this.baseline - this.bestScore) / this.baseline) * 100).toFixed(2))
+        : 0;
     this.emit({
       type: "stats_update",
       active_agents: this.agents.length,
       total_experiments: this.totalExperiments,
       hypotheses_count: this.totalHypotheses,
-      best_score: this.bestScore < this.baseline ? this.bestScore : null,
+      best_score: this.bestScore,
       baseline_score: this.baseline,
       num_instances: 8,
-      improvement_pct: Number(
-        (((this.baseline - this.bestScore) / this.baseline) * 100).toFixed(2),
-      ),
+      improvement_pct: impPct,
       timestamp: this.now(),
     });
   }
