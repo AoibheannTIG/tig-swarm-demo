@@ -8,7 +8,7 @@ fn cli() -> Command {
     Command::new("tig-challenges-evaluator")
         .about("TIG challenge evaluation")
         .arg(
-            arg!(<CHALLENGE> "Challenge name: knapsack, vehicle_routing, job_scheduling")
+            arg!(<CHALLENGE> "Challenge name: vehicle_routing")
                 .value_parser(value_parser!(String)),
         )
         .arg(arg!(<INSTANCE_FILE> "Path to the instance file").value_parser(value_parser!(PathBuf)))
@@ -38,9 +38,7 @@ fn run_evaluate(challenge: &str, instance_file: &Path, solution_file: &Path) -> 
     }
 
     let out = match challenge {
-        "knapsack" => dispatch_evaluate!(knapsack),
         "vehicle_routing" => dispatch_evaluate!(vehicle_routing),
-        "job_scheduling" => dispatch_evaluate!(job_scheduling),
         _ => anyhow::bail!("Unknown challenge: {}", challenge),
     };
     println!("Output: {}", out);

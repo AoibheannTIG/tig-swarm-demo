@@ -308,12 +308,12 @@ if __name__ == "__main__":
     
     # generate_dataset subcommand
     generate_parser = subparsers.add_parser("generate_dataset", help="Generate datasets")
-    generate_parser.add_argument("challenge", choices=["knapsack", "vehicle_routing", "job_scheduling"], help="Challenge name")
+    generate_parser.add_argument("challenge", choices=["vehicle_routing"], help="Challenge name")
     generate_parser.add_argument("config", help="Dataset config file path")
     generate_parser.add_argument("--out", default=None, help="Output directory for dataset (defaults to datasets/<challenge>)")
     # run_algorithm subcommand
     run_parser = subparsers.add_parser("run_algorithm", help="Run the algorithm on datasets")
-    run_parser.add_argument("challenge", choices=["knapsack", "vehicle_routing", "job_scheduling"], help="Challenge name")
+    run_parser.add_argument("challenge", choices=["vehicle_routing"], help="Challenge name")
     run_parser.add_argument("dataset_dir", help="Dataset directory (recursively searches for .txt files)")
     run_parser.add_argument("--workers", type=int, default=1, help="Number of worker threads")
     run_parser.add_argument("--hyperparameters", help="Hyperparameters string")
@@ -325,7 +325,7 @@ if __name__ == "__main__":
     
     # evaluate_solutions subcommand
     evaluate_parser = subparsers.add_parser("evaluate_solutions", help="Evaluate solutions")
-    evaluate_parser.add_argument("challenge", choices=["knapsack", "vehicle_routing", "job_scheduling"], help="Challenge name")
+    evaluate_parser.add_argument("challenge", choices=["vehicle_routing"], help="Challenge name")
     evaluate_parser.add_argument("dataset_dir", help="Dataset directory (recursively searches for .txt files)")
     evaluate_parser.add_argument("--solutions", default=None, help="Solutions directory (defaults to dataset directory. Search for <instance>.solution* files.)")
     evaluate_parser.add_argument("--snapshots", action="store_true", help="Evaluate snapshots of the solution")
