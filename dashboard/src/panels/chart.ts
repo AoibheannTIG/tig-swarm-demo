@@ -105,18 +105,17 @@ export class ChartPanel implements Panel {
     const w = this.width - m.left - m.right;
     const h = this.height - m.top - m.bottom;
 
-    // X-axis only extends to the latest improvement — no continuous scroll.
+    // X-axis extends past the latest improvement so the last step is visible.
     const latestData = d3.max(this.data, (d) => d.time)!;
+    const xPad = Math.max(latestData * 0.15, 5000);
     const xScale = d3.scaleLinear()
-      .domain([0, Math.max(latestData, 1)])
+      .domain([0, latestData + xPad])
       .range([0, w]);
 
     const scoreMin = d3.min(this.data, (d) => d.score)! * 0.98;
-    // Soft cap at 5500: the curve plots per-instance average scores (roughly
-    // 3500-5000 for feasible runs), but if a data point exceeds that the
-    // scale expands to fit it so the curve never escapes the plot region.
-    const dataMax = d3.max(this.data, (d) => d.score)!;
-    const scoreMax = Math.max(5500, dataMax);
+    // Y-axis top is the seed (first) score + 300 for breathing room.
+    const seedScore = this.data[0].score;
+    const scoreMax = seedScore + 300;
 
     // Standard Y axis: high values at the top, low at the bottom. The curve
     // descends as the score improves.
@@ -137,6 +136,12 @@ export class ChartPanel implements Panel {
         .attr("stroke-width", 0.5);
     });
 
+    // Append a trailing point so the last step extends to the right edge.
+    const plotData: DataPoint[] = [
+      ...this.data,
+      { time: latestData + xPad, score: this.data[this.data.length - 1].score },
+    ];
+
     // Area
     const area = d3.area<DataPoint>()
       .x((d) => xScale(d.time))
@@ -145,7 +150,7 @@ export class ChartPanel implements Panel {
       .curve(d3.curveStepAfter);
 
     chartG.append("path")
-      .datum(this.data)
+      .datum(plotData)
       .attr("d", area)
       .attr("fill", "url(#area-gradient)");
 
@@ -156,7 +161,7 @@ export class ChartPanel implements Panel {
       .curve(d3.curveStepAfter);
 
     chartG.append("path")
-      .datum(this.data)
+      .datum(plotData)
       .attr("d", line)
       .attr("fill", "none")
       .attr("stroke", "#00e5ff")
