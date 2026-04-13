@@ -106,18 +106,18 @@ BENCH=$(python3 scripts/benchmark.py 2>/dev/null)
 echo "$BENCH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Score: {d[\"score\"]}, Feasible: {d[\"feasible\"]}, Vehicles: {d[\"num_vehicles\"]}')"
 ```
 
-This builds, runs the solver on 8 benchmark instances (200 nodes each, HG/RC1_2_* dataset), evaluates feasibility, and outputs JSON. **Save the output in `$BENCH`** — you will reuse it in Step 5.
+This builds, runs the solver on 24 benchmark instances (200 nodes each, HG dataset — R1, R2, RC1, RC2, C1, C2), evaluates feasibility, and outputs JSON. **Save the output in `$BENCH`** — you will reuse it in Step 5.
 
 **Time limit: 30 seconds per instance.** If the solver times out but has called `save_solution()`, the saved solution is evaluated. If no solution was saved, the instance counts as infeasible. Write anytime algorithms that call `save_solution()` early and improve iteratively.
 
-**Single-threaded algorithm only.** Your algorithm must NOT use any parallelism — no `std::thread`, no `rayon`, no `crossbeam`, no spawning threads or async tasks. The solver runs as a single-threaded process. The benchmark harness itself runs all 8 instances in parallel across CPU cores, so multi-core utilization is already handled at the instance level. Focus your algorithm on being efficient within a single thread.
+**Single-threaded algorithm only.** Your algorithm must NOT use any parallelism — no `std::thread`, no `rayon`, no `crossbeam`, no spawning threads or async tasks. The solver runs as a single-threaded process. The benchmark harness itself runs all 24 instances in parallel across CPU cores, so multi-core utilization is already handled at the instance level. Focus your algorithm on being efficient within a single thread.
 
 Key output fields:
-- `score` — **lower is better**. Computed as: `(sum of distances for feasible instances) + (number of infeasible instances × 1,000,000)`. Infeasible instances get a massive penalty, so prioritize feasibility first, then optimize distance.
+- `score` — **lower is better**. Computed as: `(sum of distances for feasible instances + number of infeasible instances × 1,000,000) / number of instances`. This is a per-instance average. Infeasible instances get a massive penalty, so prioritize feasibility first, then optimize distance.
 - `feasible` — whether ALL instances passed constraint checks (fleet size, capacity, time windows)
 - `route_data` — vehicle routes for dashboard visualization (included automatically)
 
-A perfect score means all 8 instances feasible with minimal total distance. A score above 1,000,000 means at least one instance is infeasible.
+A perfect score means all 24 instances feasible with minimal average distance. A score above 41,666 means at least one instance is infeasible.
 
 ### Step 5: Publish Results
 

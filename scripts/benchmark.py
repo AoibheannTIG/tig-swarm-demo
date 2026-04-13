@@ -13,14 +13,30 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent.parent
 DATASET = sys.argv[1] if len(sys.argv) > 1 else str(ROOT_DIR / "datasets/vehicle_routing/HG")
 INSTANCES = [
+    "R1_2_1.txt",
+    "R1_2_2.txt",
+    "R1_2_3.txt",
+    "R1_2_4.txt",
+    "R1_2_5.txt",
+    "R2_2_1.txt",
+    "R2_2_2.txt",
+    "R2_2_3.txt",
+    "R2_2_4.txt",
+    "R2_2_5.txt",
     "RC1_2_1.txt",
     "RC1_2_2.txt",
     "RC1_2_3.txt",
     "RC1_2_4.txt",
     "RC1_2_5.txt",
-    "RC1_2_6.txt",
-    "RC1_2_7.txt",
-    "RC1_2_8.txt",
+    "RC2_2_1.txt",
+    "RC2_2_2.txt",
+    "RC2_2_3.txt",
+    "RC2_2_4.txt",
+    "RC2_2_5.txt",
+    "C1_2_1.txt",
+    "C1_2_2.txt",
+    "C2_2_1.txt",
+    "C2_2_2.txt",
 ]
 SOLVER_TIMEOUT = 30
 
@@ -176,7 +192,8 @@ def main():
 
     all_feasible = infeasible_count == 0 and feasible_count > 0
     PENALTY_PER_INFEASIBLE = 1_000_000
-    score = total_dist + infeasible_count * PENALTY_PER_INFEASIBLE
+    num_instances = len(INSTANCES)
+    score = (total_dist + infeasible_count * PENALTY_PER_INFEASIBLE) / max(num_instances, 1)
 
     result = {
         "score": score,

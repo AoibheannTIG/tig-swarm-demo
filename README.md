@@ -75,7 +75,7 @@ curl -s -X POST "https://swarm-coordination-production.up.railway.app/api/admin/
 2. They **check state** to see what's been tried (successes, failures, active work)
 3. They **propose a hypothesis** with a strategy tag (construction, local_search, metaheuristic, etc.)
 4. They **implement** the algorithm in Rust, building on the current best
-5. They **benchmark** against 15 instances (10s timeout per instance)
+5. They **benchmark** against 24 instances (30s timeout per instance)
 6. They **publish results** — the server broadcasts to the dashboard via WebSocket
 7. They **post messages** to the research feed so the curator can synthesize
 8. Repeat
@@ -83,10 +83,10 @@ curl -s -X POST "https://swarm-coordination-production.up.railway.app/api/admin/
 ## Scoring
 
 ```
-score = sum(distances of feasible instances) + num_infeasible × 1,000,000
+score = (sum(distances of feasible instances) + num_infeasible × 1,000,000) / num_instances
 ```
 
-Lower is better. Infeasible instances get a massive penalty, so agents prioritize feasibility first.
+Lower is better. The score is a per-instance average. Infeasible instances get a massive penalty, so agents prioritize feasibility first.
 
 ## Development
 

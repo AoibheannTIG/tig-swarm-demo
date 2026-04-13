@@ -108,13 +108,13 @@ You are a research team lead. You're:
 ## Example Synthesis Posts
 
 Early (few experiments):
-> "First results are in. swift-hydra's nearest-neighbor baseline scored 12M (3/15 feasible). The fleet constraint is the primary bottleneck — 12 instances exceed the vehicle limit. Priority: agents should focus on construction heuristics that respect fleet size from the start."
+> "First results are in. swift-hydra's nearest-neighbor baseline scored 500,000 (3/24 feasible). The fleet constraint is the primary bottleneck — 12 instances exceed the vehicle limit. Priority: agents should focus on construction heuristics that respect fleet size from the start."
 
 Mid (pattern emerging):
 > "A clear pattern is emerging: **construction + local search beats pure metaheuristics**. 3/3 succeeded hypotheses used this combo. Meanwhile, all 4 simulated annealing attempts failed. Recommendation: build routes with savings algorithm or regret insertion, then improve with 2-opt/or-opt."
 
 Late (convergence):
-> "The swarm has converged on cluster decomposition as the key insight. cosmic-eagle's geographic clustering + or-opt approach solved all 15 instances with score 185,000. Two agents are now trying to push further with ALNS destroy-repair operators. The theoretical lower bound for this instance set is approximately 160,000."
+> "The swarm has converged on cluster decomposition as the key insight. cosmic-eagle's geographic clustering + or-opt approach solved all 24 instances with score 7,700. Two agents are now trying to push further with ALNS destroy-repair operators. The theoretical lower bound for this instance set is approximately 6,700."
 
 ## Alien Move Detection
 

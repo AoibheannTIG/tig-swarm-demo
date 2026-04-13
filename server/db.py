@@ -86,7 +86,7 @@ CREATE INDEX IF NOT EXISTS idx_msg_created ON messages(created_at);
 """
 
 DEFAULT_CONFIG = {
-    "benchmark_instances": '["RC1_2_1","RC1_2_2","RC1_2_3","RC1_2_4","RC1_2_5","RC1_2_6","RC1_2_7","RC1_2_8"]',
+    "benchmark_instances": '["R1_2_1","R1_2_2","R1_2_3","R1_2_4","R1_2_5","R2_2_1","R2_2_2","R2_2_3","R2_2_4","R2_2_5","RC1_2_1","RC1_2_2","RC1_2_3","RC1_2_4","RC1_2_5","RC2_2_1","RC2_2_2","RC2_2_3","RC2_2_4","RC2_2_5","C1_2_1","C1_2_2","C2_2_1","C2_2_2"]',
     "admin_key": "ads-2026",
 }
 
@@ -150,22 +150,22 @@ async def get_all_agent_names(conn: aiosqlite.Connection) -> set[str]:
 
 async def compute_leaderboard(
     conn: aiosqlite.Connection,
-    num_instances: int,
 ) -> list[dict]:
     # runs         = total experiments published by the agent (any feasibility)
     # improvements = times this agent set a new global best (from best_history)
-    # best_score   = best per-instance score this agent has ever achieved.
+    # best_score   = best per-instance average score this agent has ever
+    #                achieved. Scores are already per-instance averages
+    #                (computed by benchmark.py), so no division is needed.
     #                Only feasible runs count — infeasible ones are ignored so
     #                the value represents a real achievable score rather than
     #                a penalty figure. NULL if the agent has no feasible runs.
-    divisor = max(num_instances, 1)
     cursor = await conn.execute(
-        f"""
+        """
         SELECT
             a.id   as agent_id,
             a.name as agent_name,
             COUNT(e.id) as runs,
-            MIN(CASE WHEN e.feasible = 1 THEN e.score END) / {divisor} as best_score,
+            MIN(CASE WHEN e.feasible = 1 THEN e.score END) as best_score,
             (SELECT COUNT(*) FROM best_history bh WHERE bh.agent_name = a.name) as improvements
         FROM agents a
         LEFT JOIN experiments e ON e.agent_id = a.id

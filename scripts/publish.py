@@ -33,7 +33,7 @@ def main():
         "score": bench["score"],
         "feasible": bench["feasible"],
         "num_vehicles": bench["num_vehicles"],
-        "total_distance": bench["score"],
+        "total_distance": bench.get("total_distance", bench["score"]),
         "notes": notes,
         "route_data": bench.get("route_data"),
     }

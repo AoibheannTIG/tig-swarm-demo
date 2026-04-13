@@ -61,26 +61,19 @@ def get_num_instances(config: dict, route_data=None) -> int:
         return 1
 
 
-def avg_score(raw_score: float, route_data) -> float:
-    """Convert a raw summed benchmark score (sum across all instances) into
-    the per-instance average, which is what every score display and every
-    improvement % calculation uses."""
-    n = get_num_instances({}, route_data)
-    return raw_score / max(1, n)
-
-
-async def get_baseline_avg(conn) -> float | None:
-    """The baseline is the per-instance average score of the very first
-    feasible experiment published to the DB. None when nothing feasible has
-    landed yet — in that case there is no reference point to improve on."""
+async def get_baseline_score(conn) -> float | None:
+    """The baseline is the score of the very first feasible experiment
+    published to the DB.  Scores are already per-instance averages (computed
+    by benchmark.py), so no extra normalisation is needed.  Returns None when
+    nothing feasible has landed yet."""
     cursor = await conn.execute(
-        "SELECT score, route_data FROM experiments "
+        "SELECT score FROM experiments "
         "WHERE feasible = 1 ORDER BY created_at ASC LIMIT 1"
     )
     row = await cursor.fetchone()
     if not row:
         return None
-    return avg_score(row["score"], row["route_data"])
+    return row["score"]
 
 
 async def verify_admin(req: AdminAuth) -> None:
@@ -163,17 +156,17 @@ async def periodic_stats():
             config = await get_config_cached()
             async with db.connect() as conn:
                 best = await db.get_global_best(conn)
-                baseline_avg = await get_baseline_avg(conn)
+                baseline = await get_baseline_score(conn)
                 active = await db.get_agent_count(conn, active_only=True)
                 total_exp = (await (await conn.execute("SELECT COUNT(*) as c FROM experiments")).fetchone())["c"]
                 total_hyp = (await (await conn.execute("SELECT COUNT(*) as c FROM hypotheses")).fetchone())["c"]
 
             best_route_data = best["route_data"] if best else None
             num_instances = get_num_instances(config, best_route_data)
-            best_avg = avg_score(best["score"], best_route_data) if best else None
+            best_score = best["score"] if best else None
             imp = (
-                improvement_pct(baseline_avg, best_avg)
-                if baseline_avg is not None and best_avg is not None
+                improvement_pct(baseline, best_score)
+                if baseline is not None and best_score is not None
                 else 0
             )
 
@@ -182,8 +175,8 @@ async def periodic_stats():
                 "active_agents": active,
                 "total_experiments": total_exp,
                 "hypotheses_count": total_hyp,
-                "best_score": best_avg,
-                "baseline_score": baseline_avg,
+                "best_score": best_score,
+                "baseline_score": baseline,
                 "num_instances": num_instances,
                 "improvement_pct": imp,
                 "timestamp": now(),
@@ -246,7 +239,7 @@ async def get_state():
 
     async with db.connect() as conn:
         best = await db.get_global_best(conn)
-        baseline_avg = await get_baseline_avg(conn)
+        baseline = await get_baseline_score(conn)
         active = await db.get_agent_count(conn, active_only=True)
 
         total_exp = (await (await conn.execute("SELECT COUNT(*) as c FROM experiments")).fetchone())["c"]
@@ -285,18 +278,18 @@ async def get_state():
 
         best_route_data = best["route_data"] if best else None
         num_instances = get_num_instances(config, best_route_data)
-        leaderboard = await db.compute_leaderboard(conn, num_instances)
+        leaderboard = await db.compute_leaderboard(conn)
 
-    best_avg = avg_score(best["score"], best_route_data) if best else None
+    best_score = best["score"] if best else None
     overall_imp = (
-        improvement_pct(baseline_avg, best_avg)
-        if baseline_avg is not None and best_avg is not None
+        improvement_pct(baseline, best_score)
+        if baseline is not None and best_score is not None
         else 0
     )
 
     return {
-        "baseline_score": baseline_avg,
-        "best_score": best_avg,
+        "baseline_score": baseline,
+        "best_score": best_score,
         "improvement_pct": overall_imp,
         "best_algorithm_code": best["algorithm_code"] if best else SEED_ALGORITHM_CODE,
         "best_experiment_id": best["id"] if best else None,
@@ -308,12 +301,12 @@ async def get_state():
             {
                 "id": e["id"],
                 "agent_name": e["agent_name"],
-                "score": avg_score(e["score"], e["route_data"]),
+                "score": e["score"],
                 "feasible": bool(e["feasible"]),
                 "is_new_best": bool(e["is_new_best"]),
                 "improvement_pct": (
-                    improvement_pct(baseline_avg, avg_score(e["score"], e["route_data"]))
-                    if baseline_avg is not None
+                    improvement_pct(baseline, e["score"])
+                    if baseline is not None
                     else 0
                 ),
                 "created_at": e["created_at"],
@@ -432,9 +425,9 @@ async def create_experiment(req: ExperimentCreate):
         # Capture the previous global best AND the baseline BEFORE inserting
         # this experiment, otherwise `get_global_best` returns the row we just
         # wrote and the first-ever experiment is never flagged as a new best,
-        # and `get_baseline_avg` would return this row's own score.
+        # and `get_baseline_score` would return this row's own score.
         prev_best = await db.get_global_best(conn)
-        baseline_avg = await get_baseline_avg(conn)
+        baseline = await get_baseline_score(conn)
         is_new_best = req.feasible and (prev_best is None or req.score < prev_best["score"])
 
         await conn.execute(
@@ -481,7 +474,6 @@ async def create_experiment(req: ExperimentCreate):
         # fall back to the previous global best's.
         effective_route_data = req.route_data or (prev_best["route_data"] if prev_best else None)
         num_instances = get_num_instances(config, effective_route_data)
-        req_avg = avg_score(req.score, effective_route_data)
 
         hyp_status = None
         if req.hypothesis_id:
@@ -491,8 +483,8 @@ async def create_experiment(req: ExperimentCreate):
             # the first branch catches it.
             beats_baseline = (
                 req.feasible
-                and baseline_avg is not None
-                and req_avg < baseline_avg
+                and baseline is not None
+                and req.score < baseline
             )
             hyp_status = "succeeded" if (is_new_best or beats_baseline) else "failed"
             await conn.execute(
@@ -501,10 +493,10 @@ async def create_experiment(req: ExperimentCreate):
             )
 
         await conn.commit()
-        leaderboard = await db.compute_leaderboard(conn, num_instances)
+        leaderboard = await db.compute_leaderboard(conn)
         rank = next((e["rank"] for e in leaderboard if e["agent_id"] == req.agent_id), 0)
 
-    imp = improvement_pct(baseline_avg, req_avg) if baseline_avg is not None else 0.0
+    imp = improvement_pct(baseline, req.score) if baseline is not None else 0.0
 
     if hyp_status and req.hypothesis_id:
         await manager.broadcast({
@@ -520,7 +512,7 @@ async def create_experiment(req: ExperimentCreate):
         "experiment_id": exp_id,
         "agent_name": agent_name,
         "agent_id": req.agent_id,
-        "score": req_avg,
+        "score": req.score,
         "feasible": req.feasible,
         "improvement_pct": imp,
         "delta_vs_best_pct": delta_vs_best_pct,
@@ -537,7 +529,7 @@ async def create_experiment(req: ExperimentCreate):
             "experiment_id": exp_id,
             "agent_name": agent_name,
             "agent_id": req.agent_id,
-            "score": req_avg,
+            "score": req.score,
             "improvement_pct": imp,
             "incremental_improvement_pct": incremental_pct,
             "num_instances": num_instances,
@@ -564,11 +556,8 @@ async def create_experiment(req: ExperimentCreate):
 
 @app.get("/api/leaderboard")
 async def get_leaderboard():
-    config = await get_config_cached()
     async with db.connect() as conn:
-        best = await db.get_global_best(conn)
-        num_instances = get_num_instances(config, best["route_data"] if best else None)
-        leaderboard = await db.compute_leaderboard(conn, num_instances)
+        leaderboard = await db.compute_leaderboard(conn)
     return {"updated_at": now(), "entries": leaderboard}
 
 
@@ -654,7 +643,7 @@ async def get_replay():
         {
             "experiment_id": r["experiment_id"],
             "agent_name": r["agent_name"],
-            "score": avg_score(r["score"], r["route_data"]),
+            "score": r["score"],
             "route_data": json.loads(r["route_data"]) if r["route_data"] else None,
             "created_at": r["created_at"],
         }
