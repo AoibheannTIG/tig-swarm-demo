@@ -119,7 +119,7 @@ export class ChartPanel implements Panel {
 
     // Standard Y axis: high values at the top, low at the bottom. The curve
     // descends as the score improves.
-    const yScale = d3.scaleLinear()
+    const yScale = d3.scaleLog()
       .domain([scoreMin, scoreMax])
       .range([h, 0]);
 
