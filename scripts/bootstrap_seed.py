@@ -72,7 +72,7 @@ def main() -> int:
     log("2/6 overwriting mod.rs with the Solomon seed...")
     ALGO.write_text(SEED.read_text())
 
-    log("3/6 running benchmark (build + 8 instances)...")
+    log("3/6 running benchmark (build + 24 instances)...")
     proc = subprocess.run(
         [sys.executable, str(ROOT / "scripts/benchmark.py")],
         cwd=ROOT,
