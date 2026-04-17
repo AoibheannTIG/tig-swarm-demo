@@ -656,6 +656,16 @@ html, body {
   color: #ff5252;
 }
 
+.lb-inactive .lb-name,
+.lb-inactive .lb-rank,
+.lb-inactive .lb-runs,
+.lb-inactive .lb-imp,
+.lb-inactive .lb-stag,
+.lb-inactive .lb-score {
+  color: var(--text-dim);
+  opacity: 0.45;
+}
+
 /* Sortable header buttons reuse the column widths above so columns line up
    with the data rows. */
 .leaderboard-header .lb-sortable {

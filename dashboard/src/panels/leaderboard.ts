@@ -115,7 +115,7 @@ export class LeaderboardPanel implements Panel {
     sorted.forEach((entry, i) => {
       const rank = i + 1;
       const row = document.createElement("div");
-      row.className = "leaderboard-row";
+      row.className = `leaderboard-row${entry.active ? "" : " lb-inactive"}`;
       row.dataset.agentId = entry.agent_id;
       const sortVal = entry[this.sortKey];
       row.dataset.sortValue = sortVal === null ? "" : String(sortVal);
@@ -134,7 +134,7 @@ export class LeaderboardPanel implements Panel {
       row.innerHTML = `
         <span class="lb-rank">${rank}</span>
         <span class="lb-name">
-          <span class="lb-dot" style="background:${color}"></span>
+          <span class="lb-dot" style="background:${color}; ${entry.active ? "" : "opacity:0.3"}"></span>
           ${entry.agent_name}
         </span>
         <span class="lb-runs">${entry.runs}</span>

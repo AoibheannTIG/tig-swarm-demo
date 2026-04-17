@@ -148,6 +148,10 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def inactive_cutoff() -> str:
+    return (datetime.now(timezone.utc) - timedelta(minutes=INACTIVE_MINUTES)).isoformat()
+
+
 # ── Periodic stats ──
 
 async def periodic_stats():
@@ -326,10 +330,10 @@ async def get_state(agent_id: str | None = None):
             runs_since = agent_row["runs_since_improvement"] if agent_row else 0
             if runs_since >= N_STAGNATION:
                 all_bests = await db.list_agent_bests(conn)
-                cutoff = datetime.now(timezone.utc) - timedelta(minutes=INACTIVE_MINUTES)
+                cutoff_ts = inactive_cutoff()
                 cursor = await conn.execute(
                     "SELECT id FROM agents WHERE last_heartbeat >= ?",
-                    (cutoff.isoformat(),),
+                    (cutoff_ts,),
                 )
                 active_ids = {row["id"] for row in await cursor.fetchall()}
                 chosen = _pick_inspiration(all_bests, agent_id, active_ids)
@@ -341,7 +345,7 @@ async def get_state(agent_id: str | None = None):
 
             best_route_data = my_best["route_data"] if my_best else None
             num_instances = get_num_instances(config, best_route_data)
-            leaderboard = await db.compute_leaderboard(conn)
+            leaderboard = await db.compute_leaderboard(conn, inactive_cutoff())
             global_best_score = global_best["score"] if global_best else None
 
             return {
@@ -411,7 +415,7 @@ async def get_state(agent_id: str | None = None):
         served = global_best
         best_route_data = served["route_data"] if served else None
         num_instances = get_num_instances(config, best_route_data)
-        leaderboard = await db.compute_leaderboard(conn)
+        leaderboard = await db.compute_leaderboard(conn, inactive_cutoff())
 
     global_best_score = global_best["score"] if global_best else None
     overall_imp = (
@@ -579,7 +583,7 @@ async def create_iteration(req: IterationCreate):
             (req.agent_id,),
         )
         agent_info = dict(await cursor.fetchone())
-        leaderboard = await db.compute_leaderboard(conn)
+        leaderboard = await db.compute_leaderboard(conn, inactive_cutoff())
         rank = next(
             (e["rank"] for e in leaderboard if e["agent_id"] == req.agent_id),
             0,
@@ -832,7 +836,7 @@ async def create_experiment(req: ExperimentCreate):
             )
 
         await conn.commit()
-        leaderboard = await db.compute_leaderboard(conn)
+        leaderboard = await db.compute_leaderboard(conn, inactive_cutoff())
         rank = next((e["rank"] for e in leaderboard if e["agent_id"] == req.agent_id), 0)
 
     imp = improvement_pct(baseline, req.score) if baseline is not None else 0.0
@@ -896,7 +900,7 @@ async def create_experiment(req: ExperimentCreate):
 @app.get("/api/leaderboard")
 async def get_leaderboard():
     async with db.connect() as conn:
-        leaderboard = await db.compute_leaderboard(conn)
+        leaderboard = await db.compute_leaderboard(conn, inactive_cutoff())
     return {"updated_at": now(), "entries": leaderboard}
 
 

@@ -230,6 +230,7 @@ export class MockDataGenerator {
           improvements: a.improvements,
           runs_since_improvement: 0,
           best_score: avg,
+          active: true,
         }));
 
       this.emit({

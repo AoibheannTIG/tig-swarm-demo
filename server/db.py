@@ -318,6 +318,7 @@ async def get_all_agent_names(conn: aiosqlite.Connection) -> set[str]:
 
 async def compute_leaderboard(
     conn: aiosqlite.Connection,
+    inactive_cutoff: str | None = None,
 ) -> list[dict]:
     # All counters are stored directly on the agents table and updated
     # atomically by POST /api/iterations.  best_score comes from agent_bests.
@@ -329,6 +330,7 @@ async def compute_leaderboard(
             a.experiments_completed as runs,
             a.improvements as improvements,
             a.runs_since_improvement as runs_since_improvement,
+            a.last_heartbeat as last_heartbeat,
             ab.score as best_score
         FROM agents a
         LEFT JOIN agent_bests ab ON ab.agent_id = a.id AND ab.feasible = 1
@@ -345,6 +347,7 @@ async def compute_leaderboard(
             "improvements": row["improvements"],
             "runs_since_improvement": row["runs_since_improvement"],
             "best_score": row["best_score"],
+            "active": row["last_heartbeat"] >= inactive_cutoff if inactive_cutoff and row["last_heartbeat"] else False,
         }
         for i, row in enumerate(rows)
     ]
