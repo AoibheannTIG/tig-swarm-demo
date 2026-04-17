@@ -1,10 +1,12 @@
 import * as d3 from "d3";
+import { getAgentColor } from "../lib/colors";
 import type { Panel, WSMessage } from "../types";
 
 interface DataPoint {
   time: number; // ms since start
   score: number;
   agentName?: string;
+  agentId?: string;
   isBreakthrough?: boolean;
 }
 
@@ -34,15 +36,6 @@ export class ChartPanel implements Panel {
       .attr("width", this.width)
       .attr("height", this.height);
 
-    // Gradient for area fill
-    const defs = this.svg.append("defs");
-    const grad = defs.append("linearGradient")
-      .attr("id", "area-gradient")
-      .attr("x1", "0").attr("y1", "0")
-      .attr("x2", "0").attr("y2", "1");
-    grad.append("stop").attr("offset", "0%").attr("stop-color", "#00e5ff").attr("stop-opacity", 0.2);
-    grad.append("stop").attr("offset", "100%").attr("stop-color", "#00e5ff").attr("stop-opacity", 0.0);
-
     this.g = this.svg.append("g");
 
     // Handle resize
@@ -67,7 +60,7 @@ export class ChartPanel implements Panel {
   // non-improving rows (seen in practice after resets and from a race in the
   // is_new_best check), but the chart is a best-so-far trajectory, so only
   // strictly-improving points belong on it.
-  seedHistory(entries: { score: number; agent_name: string; created_at: string }[]) {
+  seedHistory(entries: { score: number; agent_name: string; agent_id?: string; created_at: string }[]) {
     if (!entries.length) return;
     const first = new Date(entries[0].created_at).getTime();
     this.startTime = first;
@@ -80,6 +73,7 @@ export class ChartPanel implements Panel {
         time: Math.max(0, new Date(e.created_at).getTime() - first),
         score: e.score,
         agentName: e.agent_name,
+        agentId: e.agent_id,
         isBreakthrough: true,
       });
     }
@@ -108,6 +102,7 @@ export class ChartPanel implements Panel {
           time: Math.max(0, time),
           score: msg.score,
           agentName: msg.agent_name,
+          agentId: msg.agent_id,
           isBreakthrough: msg.is_new_best,
         });
         this.redraw();
@@ -118,6 +113,7 @@ export class ChartPanel implements Panel {
             time: Math.max(0, time),
             score: msg.score,
             agentName: msg.agent_name,
+            agentId: msg.agent_id,
             isBreakthrough: msg.is_new_best,
           });
           this.redraw();
@@ -165,48 +161,57 @@ export class ChartPanel implements Panel {
         .attr("stroke-width", 0.5);
     });
 
-    // Append a trailing point so the last step extends to the right edge.
-    const plotData: DataPoint[] = [
-      ...this.data,
-      { time: latestData + xPad, score: this.data[this.data.length - 1].score },
-    ];
+    // Draw per-segment colored steps (area + line) so each step
+    // inherits the color of the agent whose improvement created it.
+    const trailTime = latestData + xPad;
+    for (let i = 0; i < this.data.length; i++) {
+      const d = this.data[i];
+      const nextX = i < this.data.length - 1 ? xScale(this.data[i + 1].time) : xScale(trailTime);
+      const x0 = xScale(d.time);
+      const y0 = yScale(d.score);
+      const color = getAgentColor(d.agentId || d.agentName || "unknown");
 
-    // Area
-    const area = d3.area<DataPoint>()
-      .x((d) => xScale(d.time))
-      .y0(h)
-      .y1((d) => yScale(d.score))
-      .curve(d3.curveStepAfter);
+      // Area segment
+      chartG.append("rect")
+        .attr("x", x0)
+        .attr("y", y0)
+        .attr("width", Math.max(0, nextX - x0))
+        .attr("height", Math.max(0, h - y0))
+        .attr("fill", color)
+        .attr("opacity", 0.1);
 
-    chartG.append("path")
-      .datum(plotData)
-      .attr("d", area)
-      .attr("fill", "url(#area-gradient)");
+      // Horizontal line segment
+      chartG.append("line")
+        .attr("x1", x0).attr("x2", nextX)
+        .attr("y1", y0).attr("y2", y0)
+        .attr("stroke", color)
+        .attr("stroke-width", 2)
+        .attr("stroke-opacity", 0.9);
 
-    // Line
-    const line = d3.line<DataPoint>()
-      .x((d) => xScale(d.time))
-      .y((d) => yScale(d.score))
-      .curve(d3.curveStepAfter);
+      // Vertical drop to next step
+      if (i < this.data.length - 1) {
+        const nextY = yScale(this.data[i + 1].score);
+        const nextColor = getAgentColor(this.data[i + 1].agentId || this.data[i + 1].agentName || "unknown");
+        chartG.append("line")
+          .attr("x1", nextX).attr("x2", nextX)
+          .attr("y1", y0).attr("y2", nextY)
+          .attr("stroke", nextColor)
+          .attr("stroke-width", 2)
+          .attr("stroke-opacity", 0.9);
+      }
+    }
 
-    chartG.append("path")
-      .datum(plotData)
-      .attr("d", line)
-      .attr("fill", "none")
-      .attr("stroke", "#00e5ff")
-      .attr("stroke-width", 2)
-      .attr("stroke-opacity", 0.9);
-
-    // Breakthrough markers
+    // Breakthrough markers — colored per agent
     this.data.filter((d) => d.isBreakthrough).forEach((d) => {
       const x = xScale(d.time);
       const y = yScale(d.score);
+      const color = getAgentColor(d.agentId || d.agentName || "unknown");
 
       // Vertical dashed line
       chartG.append("line")
         .attr("x1", x).attr("x2", x)
         .attr("y1", 0).attr("y2", h)
-        .attr("stroke", "#ffab00")
+        .attr("stroke", color)
         .attr("stroke-width", 0.5)
         .attr("stroke-dasharray", "3 3")
         .attr("stroke-opacity", 0.5);
@@ -215,7 +220,7 @@ export class ChartPanel implements Panel {
       chartG.append("path")
         .attr("d", d3.symbol(d3.symbolDiamond, 24)())
         .attr("transform", `translate(${x},${y})`)
-        .attr("fill", "#ffab00")
+        .attr("fill", color)
         .attr("opacity", 0.9);
 
       // Label
@@ -223,7 +228,7 @@ export class ChartPanel implements Panel {
         chartG.append("text")
           .attr("x", x + 6)
           .attr("y", y - 8)
-          .attr("fill", "#ffab00")
+          .attr("fill", color)
           .attr("font-size", "9px")
           .attr("font-family", "var(--mono)")
           .attr("opacity", 0.8)

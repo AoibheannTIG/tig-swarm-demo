@@ -93,6 +93,7 @@ async function loadInitialState(apiUrl: string) {
     const replay: Array<{
       experiment_id: string;
       agent_name: string;
+      agent_id?: string;
       score: number;
       created_at: string;
     }> = replayRes.ok ? await replayRes.json() : [];
