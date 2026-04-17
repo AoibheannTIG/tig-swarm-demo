@@ -18,7 +18,7 @@ export function initWelcome() {
         <code>${PROMPT}</code>
         <button class="welcome-copy-btn">Copy</button>
       </div>
-      <div class="welcome-hint">Click anywhere to close &middot; press <kbd>J</kbd> to reopen</div>
+      <div class="welcome-hint">Click anywhere to close &middot; press J to reopen</div>
     </div>
   `;
   overlayEl.style.display = "none";
@@ -54,20 +54,14 @@ async function copyPrompt(btn: HTMLButtonElement) {
 }
 
 function showWelcome() {
-  if (!overlayEl) return;
   visible = true;
-  overlayEl.classList.remove("welcome-overlay--hiding");
-  overlayEl.style.display = "flex";
+  if (overlayEl) overlayEl.style.display = "flex";
 }
 
 function hideWelcome() {
-  if (!overlayEl) return;
   visible = false;
+  if (overlayEl) overlayEl.style.display = "none";
   localStorage.setItem(STORAGE_KEY, "1");
-  overlayEl.classList.add("welcome-overlay--hiding");
-  overlayEl.addEventListener("animationend", () => {
-    if (!visible && overlayEl) overlayEl.style.display = "none";
-  }, { once: true });
 }
 
 export function toggleWelcome() {
