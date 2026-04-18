@@ -67,7 +67,7 @@ function handleMessage(msg: WSMessage) {
     if (msg.type === "hypothesis_proposed") soundHypothesisProposed(msg.strategy_tag);
     if (msg.type === "experiment_published") soundExperimentPublished();
     if (msg.type === "new_global_best") soundNewGlobalBest();
-    if (msg.type === "stats_update") startHeartbeat(msg.active_agents);
+    if (msg.type === "stats_update") startHeartbeat(msg.total_agents ?? msg.active_agents);
   }
 
   if (msg.type === "new_global_best") {
@@ -114,7 +114,8 @@ async function loadInitialState(apiUrl: string) {
     handleMessage({
       type: "stats_update",
       active_agents: state.active_agents,
-      total_experiments: state.recent_experiments?.length || 0,
+      total_agents: state.total_agents ?? state.active_agents,
+      total_experiments: state.total_experiments ?? state.recent_experiments?.length ?? 0,
       hypotheses_count: state.active_hypotheses?.length || 0,
       best_score: state.best_score,
       baseline_score: state.baseline_score,
@@ -161,10 +162,9 @@ async function loadInitialState(apiUrl: string) {
         score: exp.score,
         feasible: exp.feasible !== false,
         improvement_pct: exp.improvement_pct || 0,
-        // We don't know the historical prev-best from /api/state, so leave
-        // the delta null for the replayed feed items. The feed just hides
-        // the % when null.
-        delta_vs_best_pct: null,
+        delta_vs_best_pct: exp.delta_vs_best_pct ?? null,
+        delta_vs_own_best_pct: exp.delta_vs_own_best_pct ?? null,
+        beats_own_best: exp.beats_own_best === true,
         num_instances: state.num_instances || 1,
         is_new_best: exp.is_new_best === true,
         hypothesis_id: null,
@@ -190,7 +190,7 @@ async function loadInitialState(apiUrl: string) {
 
     soundEnabled = true;
     console.log("[Dashboard] Loaded initial state:", {
-      agents: state.active_agents,
+      agents: state.total_agents ?? state.active_agents,
       experiments: state.recent_experiments?.length,
       bestScore: state.best_score,
     });

@@ -163,6 +163,7 @@ async def periodic_stats():
                 best = await db.get_global_best(conn)
                 baseline = await get_baseline_score(conn)
                 active = await db.get_agent_count(conn, active_only=True)
+                total_agents = await db.get_agent_count(conn, active_only=False)
                 total_exp = (await (await conn.execute("SELECT COUNT(*) as c FROM experiments")).fetchone())["c"]
                 total_hyp = (await (await conn.execute("SELECT COUNT(*) as c FROM hypotheses")).fetchone())["c"]
 
@@ -178,6 +179,7 @@ async def periodic_stats():
             await manager.broadcast({
                 "type": "stats_update",
                 "active_agents": active,
+                "total_agents": total_agents,
                 "total_experiments": total_exp,
                 "hypotheses_count": total_hyp,
                 "best_score": best_score,
@@ -238,7 +240,7 @@ async def heartbeat(agent_id: str, req: HeartbeatRequest):
 
 # ── State endpoint ──
 
-N_STAGNATION = 5
+N_STAGNATION = 2
 INACTIVE_MINUTES = 20
 
 
@@ -274,6 +276,7 @@ async def get_state(agent_id: str | None = None):
         global_best = await db.get_global_best(conn)
         baseline = await get_baseline_score(conn)
         active = await db.get_agent_count(conn, active_only=True)
+        total_agents = await db.get_agent_count(conn, active_only=False)
         total_exp = (await (await conn.execute(
             "SELECT COUNT(*) as c FROM experiments"
         )).fetchone())["c"]
@@ -358,6 +361,7 @@ async def get_state(agent_id: str | None = None):
                 "my_runs_since_improvement": runs_since,
                 "num_instances": num_instances,
                 "active_agents": active,
+                "total_agents": total_agents,
                 "total_experiments": total_exp,
                 "failed_hypotheses": [
                     {"id": h["id"], "title": h["title"],
@@ -396,7 +400,7 @@ async def get_state(agent_id: str | None = None):
 
         cursor = await conn.execute(
             """SELECT h.id, h.title, h.strategy_tag, h.description,
-                      h.branch_agent_id, a.name as agent_name
+                      h.status, h.branch_agent_id, a.name as agent_name
                FROM hypotheses h JOIN agents a ON a.id = h.agent_id
                WHERE h.status = 'failed'
                ORDER BY h.created_at DESC LIMIT 20"""
@@ -405,7 +409,7 @@ async def get_state(agent_id: str | None = None):
 
         cursor = await conn.execute(
             """SELECT h.id, h.title, h.strategy_tag, h.description,
-                      h.branch_agent_id, a.name as agent_name
+                      h.status, h.branch_agent_id, a.name as agent_name
                FROM hypotheses h JOIN agents a ON a.id = h.agent_id
                WHERE h.status = 'succeeded'
                ORDER BY h.created_at DESC LIMIT 10"""
@@ -436,6 +440,7 @@ async def get_state(agent_id: str | None = None):
         "served_branch_score": None,
         "num_instances": num_instances,
         "active_agents": active,
+        "total_agents": total_agents,
         "total_experiments": total_exp,
         "recent_experiments": [
             {
@@ -449,6 +454,9 @@ async def get_state(agent_id: str | None = None):
                     if baseline is not None
                     else 0
                 ),
+                "delta_vs_best_pct": e.get("delta_vs_best_pct"),
+                "delta_vs_own_best_pct": e.get("delta_vs_own_best_pct"),
+                "beats_own_best": bool(e.get("beats_own_best")),
                 "created_at": e["created_at"],
                 "notes": e["notes"],
             }
@@ -463,7 +471,7 @@ async def get_state(agent_id: str | None = None):
         ],
         "failed_hypotheses": [
             {"id": h["id"], "title": h["title"], "strategy_tag": h["strategy_tag"],
-             "agent_name": h["agent_name"], "description": h["description"],
+             "status": h["status"], "agent_name": h["agent_name"], "description": h["description"],
              "parent_hypothesis_id": h.get("parent_hypothesis_id"),
              "agent_id": h.get("agent_id", ""),
              "branch_agent_id": h.get("branch_agent_id")}
@@ -471,7 +479,7 @@ async def get_state(agent_id: str | None = None):
         ],
         "succeeded_hypotheses": [
             {"id": h["id"], "title": h["title"], "strategy_tag": h["strategy_tag"],
-             "agent_name": h["agent_name"], "description": h["description"],
+             "status": h["status"], "agent_name": h["agent_name"], "description": h["description"],
              "parent_hypothesis_id": h.get("parent_hypothesis_id"),
              "agent_id": h.get("agent_id", ""),
              "branch_agent_id": h.get("branch_agent_id")}
@@ -521,14 +529,30 @@ async def create_iteration(req: IterationCreate):
              timestamp),
         )
 
+        delta_vs_best_pct: float | None = None
+        if prev_best is not None and prev_best["score"] > 0:
+            delta_vs_best_pct = round(
+                ((prev_best["score"] - req.score) / prev_best["score"]) * 100, 6
+            )
+        delta_vs_own_best_pct: float | None = None
+        if prev_agent_best is not None and prev_agent_best["score"] > 0:
+            delta_vs_own_best_pct = round(
+                ((prev_agent_best["score"] - req.score) / prev_agent_best["score"]) * 100, 6
+            )
+
         await conn.execute(
             """INSERT INTO experiments
                (id, agent_id, hypothesis_id, algorithm_code, score, feasible,
-                num_vehicles, total_distance, notes, route_data, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                num_vehicles, total_distance, notes, route_data,
+                delta_vs_best_pct, delta_vs_own_best_pct, beats_own_best,
+                created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (exp_id, req.agent_id, hyp_id, req.algorithm_code, req.score,
              1 if req.feasible else 0, req.num_vehicles, req.total_distance,
-             req.notes, route_data_json, timestamp),
+             req.notes, route_data_json,
+             delta_vs_best_pct, delta_vs_own_best_pct,
+             1 if beats_own_best else 0,
+             timestamp),
         )
 
         if beats_own_best:
@@ -558,19 +582,6 @@ async def create_iteration(req: IterationCreate):
             )
 
         agent_name = await get_agent_name(conn, req.agent_id)
-
-        delta_vs_best_pct: float | None = None
-        if prev_best is not None and prev_best["score"] > 0:
-            delta_vs_best_pct = round(
-                ((prev_best["score"] - req.score) / prev_best["score"]) * 100,
-                6,
-            )
-        delta_vs_own_best_pct: float | None = None
-        if prev_agent_best is not None and prev_agent_best["score"] > 0:
-            delta_vs_own_best_pct = round(
-                ((prev_agent_best["score"] - req.score) / prev_agent_best["score"]) * 100,
-                6,
-            )
         incremental_pct = delta_vs_best_pct if is_new_best else None
 
         if is_new_best:
@@ -768,14 +779,30 @@ async def create_experiment(req: ExperimentCreate):
             prev_agent_best is None or req.score < prev_agent_best["score"]
         )
 
+        delta_vs_best_pct: float | None = None
+        if prev_best is not None and prev_best["score"] > 0:
+            delta_vs_best_pct = round(
+                ((prev_best["score"] - req.score) / prev_best["score"]) * 100, 6
+            )
+        delta_vs_own_best_pct: float | None = None
+        if prev_agent_best is not None and prev_agent_best["score"] > 0:
+            delta_vs_own_best_pct = round(
+                ((prev_agent_best["score"] - req.score) / prev_agent_best["score"]) * 100, 6
+            )
+
         await conn.execute(
             """INSERT INTO experiments
                (id, agent_id, hypothesis_id, algorithm_code, score, feasible,
-                num_vehicles, total_distance, runtime_seconds, notes, route_data, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                num_vehicles, total_distance, runtime_seconds, notes, route_data,
+                delta_vs_best_pct, delta_vs_own_best_pct, beats_own_best,
+                created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (exp_id, req.agent_id, req.hypothesis_id, req.algorithm_code, req.score,
              1 if req.feasible else 0, req.num_vehicles, req.total_distance,
-             req.runtime_seconds, req.notes, route_data_json, timestamp),
+             req.runtime_seconds, req.notes, route_data_json,
+             delta_vs_best_pct, delta_vs_own_best_pct,
+             1 if beats_own_best else 0,
+             timestamp),
         )
 
         if beats_own_best:
@@ -810,21 +837,6 @@ async def create_experiment(req: ExperimentCreate):
             )
 
         agent_name = await get_agent_name(conn, req.agent_id)
-        # Semantic % improvement vs the previous global best (lower is
-        # better, so positive = score dropped = improvement; negative =
-        # score rose = regression). None when there is no previous best.
-        delta_vs_best_pct: float | None = None
-        if prev_best is not None and prev_best["score"] > 0:
-            delta_vs_best_pct = round(
-                ((prev_best["score"] - req.score) / prev_best["score"]) * 100, 6
-            )
-        delta_vs_own_best_pct: float | None = None
-        if prev_agent_best is not None and prev_agent_best["score"] > 0:
-            delta_vs_own_best_pct = round(
-                ((prev_agent_best["score"] - req.score) / prev_agent_best["score"]) * 100, 6
-            )
-        # new_global_best only fires on an actual improvement, so we reuse
-        # the same positive number.
         incremental_pct = delta_vs_best_pct if is_new_best else None
 
         if is_new_best:
@@ -1130,7 +1142,7 @@ async def admin_reset(req: AdminAuth):
         await conn.execute("DELETE FROM messages")
         # agent_bests is derived data — without this, stale branch rows
         # point to just-deleted agent ids, corrupting global-best
-        # computation and the /api/state coin flip on the next run.
+        # computation and /api/state behavior on the next run.
         await conn.execute("DELETE FROM agent_bests")
         # best_history must go too. Leaving it behind means the next run's
         # first experiment sees prev_best=None (empty experiments table), gets
