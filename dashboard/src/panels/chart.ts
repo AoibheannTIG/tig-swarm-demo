@@ -16,9 +16,10 @@ type Tab =
 
 interface AgentProgress {
   registeredAt: number; // epoch ms
-  experiments: { time: number; score: number; feasible: boolean }[]; // time = ms since registeredAt
+  experiments: { time: number; score: number; feasible: boolean; experimentId?: string }[]; // time = ms since registeredAt
+  experimentIds: Set<string>;
   loaded: boolean;
-  lastEventTime: number; // epoch ms of most recent appended experiment (for dedup)
+  lastEventTime: number; // epoch ms of most recent appended experiment
 }
 
 export class ChartPanel implements Panel {
@@ -36,6 +37,9 @@ export class ChartPanel implements Panel {
   private currentTabIndex = 0;
 
   private agentProgress = new Map<string, AgentProgress>();
+  // Live experiment events that arrive before /api/agent_experiments has
+  // finished loading for a given agent.
+  private pendingAgentExperiments = new Map<string, any[]>();
 
   private tabLabelEl!: HTMLElement;
   private tabPrevEl!: HTMLElement;
@@ -135,6 +139,7 @@ export class ChartPanel implements Panel {
       this.globalData = [];
       this.globalStartTime = 0;
       this.agentProgress.clear();
+      this.pendingAgentExperiments.clear();
       this.tabs = [{ type: "global" }];
       this.currentTabIndex = 0;
       this.renderTabLabel();
@@ -254,7 +259,7 @@ export class ChartPanel implements Panel {
         agent_id: string;
         agent_name: string | null;
         registered_at: string | null;
-        experiments: { score: number; feasible: boolean; created_at: string }[];
+        experiments: { id?: string; score: number; feasible: boolean; created_at: string }[];
       } = await res.json();
 
       const registeredAt = data.registered_at
@@ -265,35 +270,81 @@ export class ChartPanel implements Panel {
         time: Math.max(0, new Date(e.created_at).getTime() - registeredAt),
         score: e.score,
         feasible: e.feasible,
+        experimentId: e.id,
       }));
+
+      const experimentIds = new Set(
+        experiments
+          .map((e) => e.experimentId)
+          .filter((id): id is string => Boolean(id))
+      );
 
       const lastEventTime = data.experiments.length
         ? new Date(data.experiments[data.experiments.length - 1].created_at).getTime()
         : 0;
 
-      this.agentProgress.set(agentId, {
+      const progress: AgentProgress = {
         registeredAt,
         experiments,
+        experimentIds,
         loaded: true,
         lastEventTime,
-      });
+      };
+
+      // Merge any live events that landed while the history request was in-flight.
+      const pending = this.pendingAgentExperiments.get(agentId) || [];
+      for (const msg of pending) {
+        this.appendToAgentProgress(progress, msg);
+      }
+      this.pendingAgentExperiments.delete(agentId);
+
+      this.agentProgress.set(agentId, progress);
     } catch {
       // leave unloaded; next tab visit will retry
     }
   }
 
+  private appendToAgentProgress(progress: AgentProgress, msg: any): boolean {
+    const msgTime = msg.timestamp ? new Date(msg.timestamp).getTime() : Date.now();
+    const experimentId = typeof msg.experiment_id === "string" ? msg.experiment_id : null;
+
+    if (experimentId && progress.experimentIds.has(experimentId)) {
+      return false;
+    }
+
+    const time = Math.max(0, msgTime - progress.registeredAt);
+    const feasible = msg.feasible !== false;
+
+    // Legacy safety net when an event lacks experiment_id.
+    if (!experimentId) {
+      const duplicate = progress.experiments.some(
+        (e) => !e.experimentId && e.time === time && e.score === msg.score && e.feasible === feasible
+      );
+      if (duplicate) return false;
+    }
+
+    progress.experiments.push({
+      time,
+      score: msg.score,
+      feasible,
+      experimentId: experimentId || undefined,
+    });
+    if (experimentId) progress.experimentIds.add(experimentId);
+    progress.lastEventTime = Math.max(progress.lastEventTime, msgTime);
+    return true;
+  }
+
   private appendAgentExperiment(msg: any) {
     if (!msg.agent_id) return;
     const progress = this.agentProgress.get(msg.agent_id);
-    if (!progress || !progress.loaded) return; // will be picked up on next load
-    const msgTime = msg.timestamp ? new Date(msg.timestamp).getTime() : Date.now();
-    if (msgTime <= progress.lastEventTime) return; // already recorded
-    progress.experiments.push({
-      time: Math.max(0, msgTime - progress.registeredAt),
-      score: msg.score,
-      feasible: msg.feasible !== false,
-    });
-    progress.lastEventTime = msgTime;
+    if (!progress || !progress.loaded) {
+      const pending = this.pendingAgentExperiments.get(msg.agent_id) || [];
+      pending.push(msg);
+      this.pendingAgentExperiments.set(msg.agent_id, pending);
+      return;
+    }
+    const added = this.appendToAgentProgress(progress, msg);
+    if (!added) return;
 
     const tab = this.currentTab();
     if (tab.type === "agent" && tab.agentId === msg.agent_id) {
@@ -326,12 +377,11 @@ export class ChartPanel implements Panel {
       .domain([0, latestData + xPad])
       .range([0, w]);
 
-    const scoreMin = d3.min(this.globalData, (d) => d.score)! * 0.98;
-    const seedScore = this.globalData[0].score;
-    const scoreMax = seedScore + 100;
+    const yDomain = this.getGlobalYDomain();
+    if (!yDomain) return;
 
     const yScale = d3.scaleLog()
-      .domain([scoreMin, scoreMax])
+      .domain(yDomain)
       .range([h, 0]);
 
     const chartG = this.g.append("g")
@@ -469,13 +519,16 @@ export class ChartPanel implements Panel {
       .domain([0, xDomainEnd])
       .range([0, w]);
 
-    // Y: log scale across all attempt scores (feasible + infeasible penalty).
+    // Y: match the GLOBAL chart domain/limits exactly when available.
+    // This intentionally allows agent points outside the domain to render
+    // off-chart so all tabs share the same visual scale.
+    const globalYDomain = this.getGlobalYDomain();
     const minScore = d3.min(exps, (d) => d.score)!;
     const maxScore = d3.max(exps, (d) => d.score)!;
-    const yMin = Math.max(1, minScore * 0.95);
-    const yMax = maxScore * 1.05;
+    const fallbackMin = Math.max(1, minScore * 0.95);
+    const fallbackMax = Math.max(fallbackMin * 1.01, maxScore * 1.05);
     const yScale = d3.scaleLog()
-      .domain([yMin, yMax])
+      .domain(globalYDomain ?? [fallbackMin, fallbackMax])
       .range([h, 0]);
 
     const yTicks = yScale.ticks(5);
@@ -532,7 +585,7 @@ export class ChartPanel implements Panel {
         .attr("font-size", "9px")
         .attr("font-family", "var(--mono)")
         .attr("text-anchor", "end")
-        .text(tick >= 10000 ? tick.toExponential(0) : tick.toFixed(0));
+        .text(tick.toFixed(0));
     });
 
     const xTicks = xScale.ticks(6);
@@ -546,6 +599,17 @@ export class ChartPanel implements Panel {
         .attr("text-anchor", "middle")
         .text(formatElapsed(tick));
     });
+  }
+
+  private getGlobalYDomain(): [number, number] | null {
+    if (this.globalData.length < 1) return null;
+    const scoreMin = d3.min(this.globalData, (d) => d.score);
+    const seedScore = this.globalData[0]?.score;
+    if (scoreMin == null || seedScore == null) return null;
+
+    const yMin = Math.max(1, scoreMin * 0.98);
+    const yMax = Math.max(yMin * 1.01, seedScore + 100);
+    return [yMin, yMax];
   }
 }
 

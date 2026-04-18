@@ -1099,7 +1099,7 @@ async def get_agent_experiments(agent_id: str):
                     "registered_at": None, "experiments": []}
 
         cursor = await conn.execute(
-            "SELECT score, feasible, created_at FROM experiments "
+            "SELECT id, score, feasible, created_at FROM experiments "
             "WHERE agent_id = ? ORDER BY created_at ASC",
             (agent_id,),
         )
@@ -1111,6 +1111,7 @@ async def get_agent_experiments(agent_id: str):
         "registered_at": agent_row["registered_at"],
         "experiments": [
             {
+                "id": r["id"],
                 "score": r["score"],
                 "feasible": bool(r["feasible"]),
                 "created_at": r["created_at"],
