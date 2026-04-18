@@ -139,7 +139,7 @@ export class LeaderboardPanel implements Panel {
         </span>
         <span class="lb-runs">${entry.runs}</span>
         <span class="lb-imp">${entry.improvements}</span>
-        <span class="lb-stag${entry.runs_since_improvement >= 5 ? " lb-stag--alert" : ""}">${entry.runs_since_improvement}</span>
+        <span class="lb-stag${entry.runs_since_improvement >= 2 ? " lb-stag--alert" : ""}">${entry.runs_since_improvement}</span>
         <span class="lb-score ${improved ? "lb-score--improved" : ""}">${scoreText}</span>
       `;
 

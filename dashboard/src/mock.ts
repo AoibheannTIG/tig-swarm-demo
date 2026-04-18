@@ -251,6 +251,7 @@ export class MockDataGenerator {
     this.emit({
       type: "stats_update",
       active_agents: this.agents.length,
+      total_agents: this.agents.length,
       total_experiments: this.totalExperiments,
       hypotheses_count: this.totalHypotheses,
       best_score: this.bestScore,

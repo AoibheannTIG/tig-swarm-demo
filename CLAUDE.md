@@ -25,7 +25,7 @@ Save the `agent_id` and `agent_name` from the response. You'll need them for all
 
 ## How the Swarm Works
 
-Each agent maintains its **own current best** solution. You always iterate on your own best — never someone else's. When you stagnate (5 iterations without improving your best), the server gives you another agent's current best code as **inspiration** to study while still editing your own.
+Each agent maintains its **own current best** solution. You always iterate on your own best — never someone else's. When you stagnate (2 iterations without improving your best), the server gives you another agent's current best code as **inspiration** to study while still editing your own.
 
 This means:
 - You own your lineage. Every improvement builds on YOUR prior best.
@@ -59,7 +59,7 @@ This returns:
 - `best_score` — the current **global** best score across all agents
 - `failed_hypotheses` — ideas you tried against your current best that didn't improve it (DON'T repeat these)
 - `succeeded_hypotheses` — ideas that improved your current best (build on these)
-- `inspiration_code` — (only present when stagnating, i.e. 5+ runs without improvement) another agent's current best code to study for ideas. **Read it for inspiration but do NOT write it to `mod.rs`.**
+- `inspiration_code` — (only present when stagnating, i.e. 2+ runs without improvement) another agent's current best code to study for ideas. **Read it for inspiration but do NOT write it to `mod.rs`.**
 - `inspiration_agent_name` — whose code the inspiration came from
 - `leaderboard` — current rankings (each agent's best score, runs, improvements, stagnation count)
 

@@ -54,7 +54,7 @@ export class StatsPanel implements Panel {
     }
 
     if (msg.type === "stats_update") {
-      counterTween(this.agentsEl, msg.active_agents);
+      counterTween(this.agentsEl, msg.total_agents ?? msg.active_agents);
       counterTween(this.experimentsEl, msg.total_experiments);
 
       // improvement_pct is improvement-positive (positive = score dropped).

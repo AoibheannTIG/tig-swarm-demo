@@ -12,8 +12,13 @@ import json
 import shutil
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+BIN_EXT = ".exe" if os.name == "nt" else ""
 
 logger = logging.getLogger("tig")
+
+
+def release_binary(name: str) -> str:
+    return os.path.join(ROOT_DIR, "target", "release", f"{name}{BIN_EXT}")
 
 
 def setup_logging(log_level: str) -> None:
@@ -39,7 +44,8 @@ def require_cargo() -> None:
 
 
 def generate_dataset(challenge: str, config_path: str, out_dir: str):
-    if not os.path.exists(f"{ROOT_DIR}/target/release/tig_generator"):
+    generator_bin = release_binary("tig_generator")
+    if not os.path.exists(generator_bin):
         logger.info("Building `tig_generator` (release)")
         subprocess.run(
             ["cargo", "build", "-r", "--bin", "tig_generator", "--features", "generator"],
@@ -55,7 +61,7 @@ def generate_dataset(challenge: str, config_path: str, out_dir: str):
         start = time.time()
         logger.info("Generating %s/%s instances (seed=%s, n=%s)", challenge, track_id, seed, n)
         subprocess.run([
-            f"{ROOT_DIR}/target/release/tig_generator",
+            generator_bin,
             challenge,
             track_id,
             "--seed", seed,
@@ -85,11 +91,9 @@ def run_algorithm_on_instance(
             solution_path = os.path.join(dataset_dir, f"{instance_file}.solution")
         logger.info("Solving %s", instance_file)
 
+        solver_bin = release_binary("tig_solver")
         cmd = [
-            "/usr/bin/time",
-            "-f", "Time: %e Memory: %M",
-            "timeout", str(timeout),
-            "target/release/tig_solver",
+            solver_bin,
             challenge,
             os.path.join(dataset_dir, instance_file),
             solution_path,
@@ -104,8 +108,19 @@ def run_algorithm_on_instance(
         else:
             next_snapshot_at = None
 
-        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, text=True)
-        stderr = None
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        started_at = time.perf_counter()
+        timed_out = False
+        stdout, stderr = "", ""
+        peak_rss_kb = None
+        ps_proc = None
+        try:
+            import psutil  # type: ignore
+            ps_proc = psutil.Process(proc.pid)
+            peak_rss_kb = 0
+        except Exception:
+            ps_proc = None
+
         while True:
             now = time.time()
             if next_snapshot_at is not None and now >= next_snapshot_at:
@@ -118,23 +133,44 @@ def run_algorithm_on_instance(
                     logger.debug("Snapshot skipped; solution does not exist yet: %s", solution_path)
                 next_snapshot_at += interval
 
-            try:
-                _, stderr = proc.communicate(timeout=0.1)
+            if ps_proc is not None:
+                try:
+                    rss_kb = int(ps_proc.memory_info().rss / 1024)
+                    peak_rss_kb = max(peak_rss_kb or 0, rss_kb)
+                except Exception:
+                    ps_proc = None
+
+            if proc.poll() is not None:
+                stdout, stderr = proc.communicate()
                 break
-            except subprocess.TimeoutExpired:
-                pass
-        
-        for line in (stderr or "").strip().split("\n"):
-            if line.startswith("Time:"):
-                parts = line.split(" ")
-                time_taken = float(parts[1].strip())
-                memory = int(parts[3].strip())
+
+            elapsed = time.perf_counter() - started_at
+            if elapsed >= timeout:
+                timed_out = True
+                proc.terminate()
+                try:
+                    stdout, stderr = proc.communicate(timeout=1)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    stdout, stderr = proc.communicate()
+                break
+
+            time.sleep(0.1)
+
+        time_taken = time.perf_counter() - started_at
+        memory = peak_rss_kb
+        if timed_out:
+            logger.warning("Solver timed out after %.3fs for %s", time_taken, instance_file)
+        elif proc.returncode not in (0, None):
+            logger.warning("Solver exit code %s for %s", proc.returncode, instance_file)
+            if (stderr or "").strip():
+                logger.debug("Solver stderr for %s: %s", instance_file, (stderr or "").strip())
 
         logger.info(
             "Solved %s | time=%.3fs memory=%sKB",
             instance_file,
             time_taken or -1,
-            memory,
+            memory if memory is not None else "n/a",
         )
         return instance_file, time_taken, memory
     except Exception as e:
@@ -224,8 +260,9 @@ def evaluate_solution(
     results = []
     for s in solutions:
         solution_file = os.path.join(solutions_dir, s)
+        evaluator_bin = release_binary("tig_evaluator")
         cmd = [
-            f"{ROOT_DIR}/target/release/tig_evaluator",
+            evaluator_bin,
             challenge,
             os.path.join(dataset_dir, instance_file),
             solution_file,
@@ -239,8 +276,8 @@ def evaluate_solution(
         if result.returncode != 0:
             logger.debug(
                 "Evaluated %s | output=error exit_code=%s stderr=%s",
-                result.returncode,
                 solution_file,
+                result.returncode,
                 (result.stderr or "").strip(),
             )
             output = "error"
@@ -263,7 +300,8 @@ def evaluate_solutions(
     num_workers: int = 1,
     csv_path: str = None,
 ) -> list:
-    if not os.path.exists("target/release/tig_evaluator"):
+    evaluator_bin = release_binary("tig_evaluator")
+    if not os.path.exists(evaluator_bin):
         logger.info("Building `tig_evaluator` (release)")
         subprocess.run(
             ["cargo", "build", "-r", "--bin", "tig_evaluator", "--features", "evaluator"],

@@ -131,6 +131,8 @@ export interface LeaderboardUpdate {
 export interface StatsUpdate {
   type: "stats_update";
   active_agents: number;
+  // Total number of agents that have ever registered.
+  total_agents?: number;
   total_experiments: number;
   hypotheses_count: number;
   // Both per-instance averages. null until the first feasible experiment
