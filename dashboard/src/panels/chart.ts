@@ -607,8 +607,8 @@ export class ChartPanel implements Panel {
     const seedScore = this.globalData[0]?.score;
     if (scoreMin == null || seedScore == null) return null;
 
-    const yMin = Math.max(1, scoreMin * 0.98);
-    const yMax = Math.max(yMin * 1.01, seedScore + 100);
+    const yMin = 6500;
+    const yMax = Math.max(yMin * 1.01, seedScore + 100) + 200;
     return [yMin, yMax];
   }
 }
