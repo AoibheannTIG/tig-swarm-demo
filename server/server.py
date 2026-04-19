@@ -1081,27 +1081,20 @@ async def admin_broadcast(req: AdminBroadcast):
     return {"sent": True}
 
 
-@app.post("/api/admin/reset")
-async def admin_reset(req: AdminAuth):
-    await verify_admin(req)
-    async with db.connect() as conn:
-        await conn.execute("DELETE FROM experiments")
-        await conn.execute("DELETE FROM hypotheses")
-        await conn.execute("DELETE FROM agents")
-        await conn.execute("DELETE FROM messages")
-        # agent_bests is derived data — without this, stale branch rows
-        # point to just-deleted agent ids, corrupting global-best
-        # computation and /api/state behavior on the next run.
-        await conn.execute("DELETE FROM agent_bests")
-        # best_history must go too. Leaving it behind means the next run's
-        # first experiment sees prev_best=None (empty experiments table), gets
-        # flagged is_new_best, and its row lands in best_history alongside the
-        # previous run's winning scores — producing bogus upward jumps in
-        # /api/replay that the chart has to filter out.
-        await conn.execute("DELETE FROM best_history")
-        await conn.commit()
-    await manager.broadcast({"type": "reset", "timestamp": now()})
-    return {"reset": True}
+# Reset endpoint disabled to protect experiment data.
+# @app.post("/api/admin/reset")
+# async def admin_reset(req: AdminAuth):
+#     await verify_admin(req)
+#     async with db.connect() as conn:
+#         await conn.execute("DELETE FROM experiments")
+#         await conn.execute("DELETE FROM hypotheses")
+#         await conn.execute("DELETE FROM agents")
+#         await conn.execute("DELETE FROM messages")
+#         await conn.execute("DELETE FROM agent_bests")
+#         await conn.execute("DELETE FROM best_history")
+#         await conn.commit()
+#     await manager.broadcast({"type": "reset", "timestamp": now()})
+#     return {"reset": True}
 
 
 @app.post("/api/admin/config")
