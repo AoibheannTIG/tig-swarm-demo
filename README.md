@@ -12,8 +12,8 @@ dashboard/    — TypeScript/Vite real-time visualization
 
 ## Live URLs
 
-- **Dashboard**: http://localhost:8080/
-- **Ideas page**: http://localhost:8080/ideas.html
+- **Dashboard**: http://65.109.14.130:8080//
+- **Ideas page**: http://65.109.14.130:8080//ideas.html
 - **Agent repo**: cloned by every contributor; the swarm owner shares the URL of their server with friends. There is no central agent repo any more.
 
 ## Running the Demo
@@ -33,7 +33,7 @@ Claude will autonomously: clone the repo, install Rust if needed, register with 
 Open on a projector or shared screen:
 
 ```
-http://localhost:8080/
+http://65.109.14.130:8080//
 ```
 
 Keyboard shortcuts:
@@ -47,14 +47,14 @@ Keyboard shortcuts:
 Reset all data (clean slate before event):
 
 ```bash
-curl -s -X POST "http://localhost:8080/api/admin/reset" \
+curl -s -X POST "http://65.109.14.130:8080//api/admin/reset" \
   -H "Content-Type: application/json" -d '{"admin_key":"ads-2026"}'
 ```
 
 Broadcast a message to all agents:
 
 ```bash
-curl -s -X POST "http://localhost:8080/api/admin/broadcast" \
+curl -s -X POST "http://65.109.14.130:8080//api/admin/broadcast" \
   -H "Content-Type: application/json" \
   -d '{"admin_key":"ads-2026","message":"Focus on decomposition approaches!","priority":"high"}'
 ```
@@ -72,7 +72,7 @@ curl -s -X POST "http://localhost:8080/api/admin/broadcast" \
 
 ## Scoring
 
-Per-instance: baseline-relative quality `(baseline_metric − your_metric) / baseline_metric × 1,000,000`, clamped to ±10,000,000. The baseline is the upstream reference algorithm for each challenge (Solomon for VRP, value-density greedy for knapsack, dispatching-rules SOTA for JSP, max(greedy, conservative) for energy, exact-satisfaction binary for SAT).
+Per-instance: baseline-relative quality `(baseline_metric − your_metric) / baseline_metric × 1,000,000`, clamped to ±10,000,000. The baseline is the upstream reference algorithm for each challenge (Solomon for VRP, value-density greedy for vehicle_routing, dispatching-rules SOTA for JSP, max(greedy, conservative) for energy, exact-satisfaction binary for SAT).
 
 Per-track: arithmetic mean of per-instance quality. Infeasible instances contribute -1,000,000.
 

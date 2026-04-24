@@ -366,8 +366,34 @@ def run_init() -> int:
     print("\nPushing swarm config to server (best effort)…")
     push_config_to_server(server_url, admin_key, cfg)
 
-    print("\nOpening tacit_knowledge_personal.md for your private hints…")
-    init_personal_tacit_knowledge()
+    print(
+        "\n── Tacit knowledge (optional) ──\n"
+        "You can give your local Claude agent private strategy hints that\n"
+        "other agents in the swarm never see. These are read when the agent\n"
+        "stagnates (2+ iterations without improvement).\n"
+        "Examples: 'Try simulated annealing with cooling schedule',\n"
+        "          'Focus on the interaction_values matrix structure'\n"
+    )
+    tk_path = init_personal_tacit_knowledge()
+    hints: list[str] = []
+    while True:
+        hint = input("Add a hint (or press Enter to skip): ").strip()
+        if not hint:
+            break
+        hints.append(hint)
+    if hints:
+        lines = [
+            "# Personal tacit knowledge\n",
+            "Hints only **your local Claude agent** sees. Never sent to the server.\n",
+            "Read by your agent when stagnating (`my_runs_since_improvement >= 2`).\n",
+            "\n## When stuck, try…\n",
+        ]
+        for h in hints:
+            lines.append(f"- {h}\n")
+        tk_path.write_text("\n".join(lines))
+        print(f"  wrote {len(hints)} hint(s) to {tk_path.relative_to(ROOT)}")
+    else:
+        print(f"  no hints added (edit {tk_path.relative_to(ROOT)} any time)")
 
     print(
         "\nDone. Next steps:\n"
@@ -421,7 +447,34 @@ def run_join(server_url: str) -> int:
         }
     )
 
-    init_personal_tacit_knowledge()
+    print(
+        "\n── Tacit knowledge (optional) ──\n"
+        "You can give your local Claude agent private strategy hints that\n"
+        "other agents in the swarm never see. These are read when the agent\n"
+        "stagnates (2+ iterations without improvement).\n"
+        "Examples: 'Try simulated annealing with cooling schedule',\n"
+        "          'Focus on the interaction_values matrix structure'\n"
+    )
+    tk_path = init_personal_tacit_knowledge()
+    hints: list[str] = []
+    while True:
+        hint = input("Add a hint (or press Enter to skip): ").strip()
+        if not hint:
+            break
+        hints.append(hint)
+    if hints:
+        lines = [
+            "# Personal tacit knowledge\n",
+            "Hints only **your local Claude agent** sees. Never sent to the server.\n",
+            "Read by your agent when stagnating (`my_runs_since_improvement >= 2`).\n",
+            "\n## When stuck, try…\n",
+        ]
+        for h in hints:
+            lines.append(f"- {h}\n")
+        tk_path.write_text("\n".join(lines))
+        print(f"  wrote {len(hints)} hint(s) to {tk_path.relative_to(ROOT)}")
+    else:
+        print(f"  no hints added (edit {tk_path.relative_to(ROOT)} any time)")
 
     print(
         "\nDone. Open Claude Code in this directory and have it read\n"

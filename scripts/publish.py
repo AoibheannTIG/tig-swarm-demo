@@ -17,7 +17,7 @@ from pathlib import Path
 # rerunning setup. The startswith("$") check catches the un-substituted
 # placeholder so a contributor who forgot to run setup.py join gets a
 # loud failure instead of a silent post to nowhere.
-SERVER = os.environ.get("TIG_SWARM_SERVER") or "http://localhost:8080"
+SERVER = os.environ.get("TIG_SWARM_SERVER") or "http://65.109.14.130:8080/"
 if SERVER.startswith("$"):
     sys.exit(
         "publish.py: server URL not configured. Run "
