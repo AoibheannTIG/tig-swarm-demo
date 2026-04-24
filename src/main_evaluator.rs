@@ -30,19 +30,45 @@ fn run_evaluate(challenge: &str, instance_file: &Path, solution_file: &Path) -> 
     let instance_content = fs::read_to_string(instance_file)?;
     let solution_content = fs::read_to_string(solution_file)?;
 
+    // Each challenge's evaluate_solution returns its own numeric type
+    // (i32 for SAT/knapsack, f32 for VRP, f64 for energy). Cast everything
+    // to f64 so the match arms have a uniform type.
     macro_rules! dispatch_evaluate {
         ($c:ident) => {{
             let instance = challenges::$c::Challenge::from_txt(&instance_content)?;
             let solution = challenges::$c::Solution::from_txt(&solution_content)?;
-            instance.evaluate_solution(&solution)?
+            instance.evaluate_solution(&solution)? as f64
         }};
     }
 
     let out = match challenge {
+        #[cfg(feature = "satisfiability")]
+        "satisfiability" => dispatch_evaluate!(satisfiability),
+        #[cfg(feature = "vehicle_routing")]
         "vehicle_routing" => dispatch_evaluate!(vehicle_routing),
-        _ => anyhow::bail!("Unknown challenge: {}", challenge),
+        #[cfg(feature = "knapsack")]
+        "knapsack" => dispatch_evaluate!(knapsack),
+        #[cfg(feature = "job_scheduling")]
+        "job_scheduling" => dispatch_evaluate!(job_scheduling),
+        #[cfg(feature = "energy_arbitrage")]
+        "energy_arbitrage" => dispatch_evaluate!(energy_arbitrage),
+        _ => anyhow::bail!(
+            "Unknown or disabled challenge: {}. Enable the corresponding crate feature (e.g. `--features {}`).",
+            challenge, challenge
+        ),
     };
-    println!("{}", json!({ "distance": out }));
+    // The dispatch returns each challenge's native score type; print it
+    // as a generic `score` field so downstream tooling can stay challenge-
+    // agnostic. (We keep the legacy "distance" key as a fallback for
+    // existing benchmark.py parsing of vehicle_routing output.)
+    let score_value = serde_json::to_value(&out).unwrap_or(serde_json::Value::Null);
+    println!(
+        "{}",
+        json!({
+            "score": score_value.clone(),
+            "distance": score_value,
+        })
+    );
     Ok(())
 }
 

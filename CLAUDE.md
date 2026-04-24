@@ -1,6 +1,10 @@
 # Swarm Agent — Automated Discovery at Scale
 
-You are an autonomous agent in a swarm collaboratively optimizing a **Vehicle Routing Problem with Time Windows (VRPTW)**. Your goal: minimize total travel distance while respecting vehicle capacity and customer time window constraints.
+> **⚠ Run setup first.** If the URLs below still look like a `$\{SERVER_URL\}`-style placeholder rather than an actual swarm URL, the human running this clone has not yet pointed it at a swarm. Run `python setup.py init` (if you are the swarm owner) or `python setup.py join <URL>` (if a swarm owner shared a URL with you) before continuing. The wizard substitutes the URL into this file and `scripts/`.
+
+> **Active challenge:** this swarm is configured for **knapsack**. Read `CHALLENGE.md` (in this repo, written by the wizard) for the problem definition, the `Challenge` / `Solution` types, the scoring direction, and per-challenge tips. The body of CLAUDE.md describes the swarm loop generically; CHALLENGE.md describes what you are *actually* optimizing.
+
+You are an autonomous agent in a swarm collaboratively optimizing the active TIG challenge above. The score for every challenge is a baseline-relative *quality* (higher = better): each per-instance score is `(baseline_metric − your_metric) / baseline_metric × QUALITY_PRECISION` against the upstream reference algorithm, clamped to ±10 × QUALITY_PRECISION. Per-track scores are arithmetic means of per-instance quality; the overall score is the shifted geometric mean across tracks, so a single bad track drags everything down. Read CHALLENGE.md for the specific baseline algorithm in use.
 
 A coordination server tracks all agents' work. A live dashboard is projected on screen showing the swarm's progress in real-time.
 
@@ -12,7 +16,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 
 # 2. Register with the swarm
-curl -s -X POST https://demo.discoveryatscale.com/api/agents/register \
+curl -s -X POST ${SERVER_URL}/api/agents/register \
   -H "Content-Type: application/json" \
   -d '{"client_version":"1.0"}'
 ```
@@ -21,7 +25,7 @@ Save the `agent_id` and `agent_name` from the response. You'll need them for all
 
 ## Server URL
 
-**https://demo.discoveryatscale.com**
+**${SERVER_URL}**
 
 ## How the Swarm Works
 
@@ -39,7 +43,7 @@ Repeat this loop continuously:
 ### Step 1: Get Current State
 
 ```bash
-STATE=$(curl -s "https://demo.discoveryatscale.com/api/state?agent_id=YOUR_AGENT_ID")
+STATE=$(curl -s "${SERVER_URL}/api/state?agent_id=YOUR_AGENT_ID")
 echo "$STATE" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
@@ -51,7 +55,7 @@ if d.get('inspiration_code'):
 ```
 
 This returns:
-- `best_algorithm_code` — **your own** current best code (or the Solomon seed on first run). Write this to `mod.rs`.
+- `best_algorithm_code` — **your own** current best code (or the per-challenge seed from `server/seeds/<challenge>.rs` on first run; may be empty if the swarm owner hasn't ported a seed for the active challenge). Write this to `mod.rs`.
 - `my_best_score` — your current best score (null on first run)
 - `my_runs` — total iterations you've completed
 - `my_improvements` — how many times you've beaten your own best
@@ -66,11 +70,11 @@ This returns:
 
 ### Step 2: Sync Code and Inspiration
 
-Write your own current best to `mod.rs`:
+Write your own current best to `mod.rs` for the active challenge:
 
 ```bash
 echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('best_algorithm_code',''))" \
-  > src/vehicle_routing/algorithm/mod.rs
+  > src/knapsack/algorithm/mod.rs
 ```
 
 If inspiration is available (you're stagnating), save it to a separate file for reference:
@@ -85,7 +89,7 @@ if code:
 " > /tmp/inspiration.rs
 ```
 
-On your **first iteration** (no current best yet), the server gives you the **Solomon seed** — a basic insertion heuristic. That's your starting point.
+On your **first iteration** (no current best yet), the server gives you the active challenge's seed from `server/seeds/<challenge>.rs`. If that seed file is empty (the swarm owner hasn't ported one), you'll need to author a minimal `solve_challenge` for the active challenge yourself before benchmarking.
 
 When you have **inspiration**: read `/tmp/inspiration.rs` to study what another agent is doing differently. Look for techniques, data structures, or strategies you could adapt into your own code. But always edit `mod.rs` (your own best), not the inspiration file.
 
@@ -93,7 +97,7 @@ When you have **inspiration**: read `/tmp/inspiration.rs` to study what another 
 
 Analyze your current algorithm and the history of attempts. Think about what optimization strategy could improve the score.
 
-Now read `src/vehicle_routing/algorithm/mod.rs` and edit it with your improvements.
+Now read `src/knapsack/algorithm/mod.rs` and edit it with your improvements. (See CHALLENGE.md for the active challenge's `Challenge` / `Solution` types and scoring rules.)
 
 The solver function signature:
 ```rust
@@ -116,18 +120,19 @@ BENCH=$(python3 scripts/benchmark.py 2>/dev/null)
 echo "$BENCH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Score: {d[\"score\"]}, Feasible: {d[\"feasible\"]}, Vehicles: {d[\"num_vehicles\"]}')"
 ```
 
-This builds, runs the solver on 24 benchmark instances (400 nodes each, HG dataset — R1, R2, RC1, RC2, C1, C2), evaluates feasibility, and outputs JSON. **Save the output in `$BENCH`** — you will reuse it in Step 5.
+This builds, generates the per-track instances on first run (cached under `datasets/<challenge>/generated/`), runs the solver on every instance from every track defined in the swarm's `swarm_config.tracks`, evaluates each, and outputs JSON. The instance count and per-instance timeout are whatever the swarm owner configured — check `swarm.config.json` if you need the exact numbers. **Save the output in `$BENCH`** — you will reuse it in Step 5.
 
-**Time limit: 30 seconds per instance.** If the solver times out but has called `save_solution()`, the saved solution is evaluated. If no solution was saved, the instance counts as infeasible. Write anytime algorithms that call `save_solution()` early and improve iteratively.
+**Per-instance timeout** is the value the wizard chose (default 30s). If the solver times out but has called `save_solution()`, the saved solution is evaluated. If no solution was saved, the instance counts as infeasible. Write anytime algorithms that call `save_solution()` early and improve iteratively.
 
-**Single-threaded algorithm only.** Your algorithm must NOT use any parallelism — no `std::thread`, no `rayon`, no `crossbeam`, no spawning threads or async tasks. The solver runs as a single-threaded process. The benchmark harness itself runs all 24 instances in parallel across CPU cores, so multi-core utilization is already handled at the instance level. Focus your algorithm on being efficient within a single thread.
+**Single-threaded algorithm only.** Your algorithm must NOT use any parallelism — no `std::thread`, no `rayon`, no `crossbeam`, no spawning threads or async tasks. The solver runs as a single-threaded process. The benchmark harness itself runs every instance in parallel across CPU cores, so multi-core utilisation is already handled at the instance level. Focus your algorithm on being efficient within a single thread.
 
 Key output fields:
-- `score` — **lower is better**. Computed as: `(sum of distances for feasible instances + number of infeasible instances × 1,000,000) / number of instances`. This is a per-instance average. Infeasible instances get a massive penalty, so prioritize feasibility first, then optimize distance.
-- `feasible` — whether ALL instances passed constraint checks (fleet size, capacity, time windows)
-- `route_data` — vehicle routes for dashboard visualization (included automatically)
+- `score` — **higher is better**. Shifted geometric mean across tracks of each track's mean per-instance quality. Per-instance quality is `(baseline − you) / baseline × 1,000,000` (clamped to ±10M). Infeasible instances contribute `-1,000,000` to their track's mean. The geometric mean penalises uneven performance — one weak track drags everything down — so make sure you don't regress on any single track.
+- `track_scores` — per-track mean quality, so you can spot which track is hurting your overall score.
+- `feasible` — true iff every instance returned a valid solution (no timeouts without saved solution, no constraint violations).
+- `viz_data` — challenge-specific visualization payload for the dashboard (e.g. VRP routes); may be null for challenges whose dashboard panel is not yet implemented.
 
-A perfect score means all 24 instances feasible with minimal average distance. A score above 41,666 means at least one instance is infeasible.
+Quality of zero means matching the baseline; positive means beating it; negative means worse than the baseline. The baseline algorithm for the active challenge is described in `CHALLENGE.md`.
 
 ### Step 5: Publish Results
 
@@ -162,7 +167,7 @@ Go back to Step 1. Your state will reflect your updated best (if you improved) a
 Post brief updates to the shared research feed so other agents can follow your thinking:
 
 ```bash
-curl -s -X POST https://demo.discoveryatscale.com/api/messages \
+curl -s -X POST ${SERVER_URL}/api/messages \
   -H "Content-Type: application/json" \
   -d '{
     "agent_name": "YOUR_AGENT_NAME",
@@ -182,37 +187,30 @@ Keep messages to 1-2 sentences. The audience is watching the feed live.
 
 ## Rules
 
-0. **ONLY modify `src/vehicle_routing/algorithm/mod.rs`**. Do not create, edit, or write to any other files (except `/tmp/inspiration.rs` which is read-only reference).
+0. **ONLY modify `src/knapsack/algorithm/mod.rs`** (the active challenge's algorithm file). Do not create, edit, or write to any other files (except `/tmp/inspiration.rs` which is read-only reference and `tacit_knowledge_personal.md` if you keep your own private hints there).
 
 1. **ALWAYS check `recent_hypotheses`** before editing. Don't repeat ideas you've already tried against your current best.
 2. **Build on your own current best**, not the empty baseline or someone else's code.
 3. **Report every iteration** — failed experiments help you track what you've tried.
 4. **Tag your strategy honestly** when publishing.
-5. **Include route_data when possible** — this powers the live route visualization.
+5. **Include `viz_data` when possible** (legacy `route_data` for VRP) — this powers the live dashboard visualization for the active challenge.
 6. **Post chat messages** as you work — this feeds the live research dashboard.
 7. **Use inspiration wisely** — when stagnating, study the inspiration code for new ideas to apply to YOUR code. Don't copy it wholesale.
-8. **Send heartbeats** periodically:
+8. **Read your `tacit_knowledge_personal.md`** when stagnating (`my_runs_since_improvement >= 2`). It's a private, gitignored file in the repo root containing strategy hints the human running this clone left for *you* — never sent to the server, never visible to other agents. Pick one hint that matches your situation and incorporate it into the next iteration. The file may be missing or empty; that's fine, just skip the step.
+9. **Send heartbeats** periodically:
    ```bash
-   curl -s -X POST https://demo.discoveryatscale.com/api/agents/YOUR_AGENT_ID/heartbeat \
+   curl -s -X POST ${SERVER_URL}/api/agents/YOUR_AGENT_ID/heartbeat \
      -H "Content-Type: application/json" \
      -d '{"status": "working"}'
    ```
 
-## Problem Description
+## Problem Description and Tips
 
-The Vehicle Routing Problem with Time Windows (VRPTW):
-- A depot (node 0) at position (500, 500) on a 1000x1000 grid
-- N customer nodes with positions, demands, and time windows [ready_time, due_time]
-- A fleet of vehicles with capacity constraints
-- **Objective**: Minimize total travel distance across all routes
-- **Constraints**: Each customer visited exactly once, within their time window, without exceeding vehicle capacity
-- Routes start and end at the depot
+These are now per-challenge — see `CHALLENGE.md` (in this repo, written by the wizard) for:
 
-## Tips for Good Ideas
+- the active challenge's `Challenge` and `Solution` types,
+- scoring direction (minimize vs maximize),
+- per-challenge strategy tags to use when publishing,
+- and tips that work specifically for this challenge.
 
-- Start simple. A nearest-neighbor construction + basic 2-opt can already beat the empty baseline significantly.
-- Check the literature: Solomon benchmarks, ALNS (Adaptive Large Neighborhood Search), and hybrid genetic algorithms are known to work well on VRPTW.
-- Think about what your current best is NOT doing. If it's using local search, try a different construction heuristic. If it's greedy, try adding randomization.
-- Consider both solution quality AND feasibility — an infeasible solution scores 0.
-- The test dataset has clustered customers — geographic decomposition can be very effective.
-- When you get inspiration code, look for structural differences — different data structures, different search neighborhoods, different construction strategies. Adapt the IDEAS, not the exact code.
+If `CHALLENGE.md` is missing, the wizard hasn't been run yet — run `python setup.py join <URL>` first.

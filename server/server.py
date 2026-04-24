@@ -13,6 +13,7 @@ from pathlib import Path
 from models import (
     RegisterRequest, HeartbeatRequest, HypothesisCreate, ExperimentCreate,
     IterationCreate, AdminBroadcast, AdminAuth, MessageCreate,
+    SwarmConfigUpdate,
     AgentResponse, HypothesisResponse,
     ExperimentResponse, IterationResponse, new_id, improvement_pct,
 )
@@ -22,16 +23,30 @@ import db
 
 logger = logging.getLogger("swarm")
 
-# Seed algorithm served as best_algorithm_code on a fresh run, before any
-# experiments have been published. A thin solve_challenge wrapper around
-# the Solomon insertion heuristic — the first agent to run benchmarks against
-# this is what establishes the initial best.
-_SEED_PATH = Path(__file__).parent / "seed_algorithm.rs"
-try:
-    SEED_ALGORITHM_CODE = _SEED_PATH.read_text()
-except FileNotFoundError:
-    logger.warning("seed_algorithm.rs not found at %s", _SEED_PATH)
-    SEED_ALGORITHM_CODE = ""
+# Per-challenge seed algorithms served as best_algorithm_code on a fresh
+# run, before any experiments have been published. The seed for the active
+# challenge gets written to the agent's algorithm/mod.rs and benchmarked;
+# whatever score it produces becomes the lineage's foundation. Each
+# challenge has its own file under server/seeds/<challenge>.rs — empty
+# files mean "not yet ported"; the agent will see an empty seed and
+# either author its own or fail loudly.
+_SEEDS_DIR = Path(__file__).parent / "seeds"
+
+
+def load_seed_for(challenge: str) -> str:
+    path = _SEEDS_DIR / f"{challenge}.rs"
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        logger.warning("seed not found at %s — serving empty", path)
+        return ""
+    if not text.strip():
+        logger.warning(
+            "seed at %s is empty — first %s agent will need to author one",
+            path, challenge,
+        )
+    return text
+
 
 # Cached config — refreshed on admin config update
 _config_cache: dict | None = None
@@ -45,10 +60,17 @@ async def get_config_cached() -> dict:
     return _config_cache
 
 
+async def get_direction() -> str:
+    cfg = await get_config_cached()
+    d = cfg.get("scoring_direction", "min")
+    return "max" if d == "max" else "min"
+
+
 def get_num_instances(config: dict, route_data=None) -> int:
     # Authoritative count: the actual keys in the current best experiment's
-    # route_data. Config is only the fallback for the pre-first-experiment
-    # moment, so it can't drift out of sync with what benchmark.py is running.
+    # route_data (one entry per benchmark instance). The swarm config's
+    # `tracks` dict is the fallback for the pre-first-experiment moment —
+    # sum the per-track instance counts (excluding the "seed" key).
     if route_data:
         try:
             rd = json.loads(route_data) if isinstance(route_data, str) else route_data
@@ -57,7 +79,12 @@ def get_num_instances(config: dict, route_data=None) -> int:
         except Exception:
             pass
     try:
-        return len(json.loads(config.get("benchmark_instances", "[]"))) or 1
+        tracks = json.loads(config.get("tracks", "{}"))
+        total = sum(
+            int(v) for k, v in tracks.items()
+            if k != "seed" and isinstance(v, (int, float))
+        )
+        return total or 1
     except Exception:
         return 1
 
@@ -159,8 +186,9 @@ async def periodic_stats():
         await asyncio.sleep(10)
         try:
             config = await get_config_cached()
+            direction = await get_direction()
             async with db.connect() as conn:
-                best = await db.get_global_best(conn)
+                best = await db.get_global_best(conn, direction=direction)
                 baseline = await get_baseline_score(conn)
                 cutoff_ts = inactive_cutoff()
                 active = await db.get_agent_count(
@@ -174,7 +202,7 @@ async def periodic_stats():
             num_instances = get_num_instances(config, best_route_data)
             best_score = best["score"] if best else None
             imp = (
-                improvement_pct(baseline, best_score)
+                improvement_pct(baseline, best_score, direction)
                 if baseline is not None and best_score is not None
                 else 0
             )
@@ -218,13 +246,17 @@ async def register_agent(req: RegisterRequest):
         "timestamp": timestamp,
     })
 
+    # Tell the agent which challenge it's joining and how often to heartbeat.
+    # Per-track instance counts and timeout live in /api/swarm_config — agents
+    # already poll that endpoint at startup, so we don't duplicate the data
+    # here.
     return AgentResponse(
         agent_id=agent_id,
         agent_name=agent_name,
         registered_at=timestamp,
         config={
             "heartbeat_interval_seconds": 30,
-            "benchmark_instances": json.loads(config.get("benchmark_instances", "[]")),
+            "challenge": config.get("challenge", "vehicle_routing"),
         },
     )
 
@@ -274,9 +306,10 @@ async def get_state(agent_id: str | None = None):
     When `agent_id` is omitted, returns a global dashboard view.
     """
     config = await get_config_cached()
+    direction = await get_direction()
 
     async with db.connect() as conn:
-        global_best = await db.get_global_best(conn)
+        global_best = await db.get_global_best(conn, direction=direction)
         baseline = await get_baseline_score(conn)
         cutoff_ts = inactive_cutoff()
         active = await db.get_agent_count(
@@ -306,7 +339,10 @@ async def get_state(agent_id: str | None = None):
             )
             agent_row = await cursor.fetchone()
 
-            my_best_code = my_best["algorithm_code"] if my_best else SEED_ALGORITHM_CODE
+            my_best_code = (
+                my_best["algorithm_code"] if my_best
+                else load_seed_for(config.get("challenge", "vehicle_routing"))
+            )
             my_best_score = my_best["score"] if my_best else None
             my_best_experiment_id = my_best["experiment_id"] if my_best else None
 
@@ -336,7 +372,7 @@ async def get_state(agent_id: str | None = None):
             inspiration_agent_name = None
             runs_since = agent_row["runs_since_improvement"] if agent_row else 0
             if runs_since >= N_STAGNATION:
-                all_bests = await db.list_agent_bests(conn)
+                all_bests = await db.list_agent_bests(conn, direction=direction)
                 cutoff_ts = inactive_cutoff()
                 cursor = await conn.execute(
                     "SELECT id FROM agents WHERE last_heartbeat >= ?",
@@ -352,7 +388,7 @@ async def get_state(agent_id: str | None = None):
 
             best_route_data = my_best["route_data"] if my_best else None
             num_instances = get_num_instances(config, best_route_data)
-            leaderboard = await db.compute_leaderboard(conn, inactive_cutoff())
+            leaderboard = await db.compute_leaderboard(conn, inactive_cutoff(), direction=direction)
             global_best_score = global_best["score"] if global_best else None
 
             return {
@@ -400,11 +436,11 @@ async def get_state(agent_id: str | None = None):
         served = global_best
         best_route_data = served["route_data"] if served else None
         num_instances = get_num_instances(config, best_route_data)
-        leaderboard = await db.compute_leaderboard(conn, inactive_cutoff())
+        leaderboard = await db.compute_leaderboard(conn, inactive_cutoff(), direction=direction)
 
     global_best_score = global_best["score"] if global_best else None
     overall_imp = (
-        improvement_pct(baseline, global_best_score)
+        improvement_pct(baseline, global_best_score, direction)
         if baseline is not None and global_best_score is not None
         else 0
     )
@@ -413,7 +449,10 @@ async def get_state(agent_id: str | None = None):
         "baseline_score": baseline,
         "best_score": global_best_score,
         "improvement_pct": overall_imp,
-        "best_algorithm_code": served["algorithm_code"] if served else SEED_ALGORITHM_CODE,
+        "best_algorithm_code": (
+            served["algorithm_code"] if served
+            else load_seed_for(config.get("challenge", "vehicle_routing"))
+        ),
         "best_experiment_id": served["id"] if served else None,
         "best_route_data": json.loads(served["route_data"]) if served and served["route_data"] else None,
         "num_instances": num_instances,
@@ -429,7 +468,7 @@ async def get_state(agent_id: str | None = None):
                 "feasible": bool(e["feasible"]),
                 "is_new_best": bool(e["is_new_best"]),
                 "improvement_pct": (
-                    improvement_pct(baseline, e["score"])
+                    improvement_pct(baseline, e["score"], direction)
                     if baseline is not None
                     else 0
                 ),
@@ -457,6 +496,7 @@ async def get_state(agent_id: str | None = None):
 @app.post("/api/iterations", response_model=IterationResponse)
 async def create_iteration(req: IterationCreate):
     config = await get_config_cached()
+    direction = await get_direction()
     exp_id = new_id()
     hyp_id = new_id()
     timestamp = now()
@@ -466,13 +506,14 @@ async def create_iteration(req: IterationCreate):
     async with db.connect() as conn:
         await conn.execute("BEGIN IMMEDIATE")
 
-        prev_best = await db.get_global_best(conn)
+        prev_best = await db.get_global_best(conn, direction=direction)
         prev_agent_best = await db.get_agent_best(conn, req.agent_id)
         baseline = await get_baseline_score(conn)
 
-        is_new_best = prev_best is None or req.score < prev_best["score"]
+        is_new_best = prev_best is None or db.is_better(direction, req.score, prev_best["score"])
         beats_own_best = (
-            prev_agent_best is None or req.score < prev_agent_best["score"]
+            prev_agent_best is None
+            or db.is_better(direction, req.score, prev_agent_best["score"])
         )
 
         target_best_experiment_id = (
@@ -491,14 +532,14 @@ async def create_iteration(req: IterationCreate):
         )
 
         delta_vs_best_pct: float | None = None
-        if prev_best is not None and prev_best["score"] > 0:
+        if prev_best is not None and prev_best["score"] != 0:
             delta_vs_best_pct = round(
-                ((prev_best["score"] - req.score) / prev_best["score"]) * 100, 6
+                improvement_pct(prev_best["score"], req.score, direction), 6
             )
         delta_vs_own_best_pct: float | None = None
-        if prev_agent_best is not None and prev_agent_best["score"] > 0:
+        if prev_agent_best is not None and prev_agent_best["score"] != 0:
             delta_vs_own_best_pct = round(
-                ((prev_agent_best["score"] - req.score) / prev_agent_best["score"]) * 100, 6
+                improvement_pct(prev_agent_best["score"], req.score, direction), 6
             )
 
         await conn.execute(
@@ -561,7 +602,7 @@ async def create_iteration(req: IterationCreate):
             (req.agent_id,),
         )
         agent_info = dict(await cursor.fetchone())
-        leaderboard = await db.compute_leaderboard(conn, inactive_cutoff())
+        leaderboard = await db.compute_leaderboard(conn, inactive_cutoff(), direction=direction)
         rank = next(
             (e["rank"] for e in leaderboard if e["agent_id"] == req.agent_id),
             0,
@@ -571,7 +612,7 @@ async def create_iteration(req: IterationCreate):
         prev_best["route_data"] if prev_best else None
     )
     num_instances = get_num_instances(config, effective_route_data)
-    imp = improvement_pct(baseline, req.score) if baseline is not None else 0.0
+    imp = improvement_pct(baseline, req.score, direction) if baseline is not None else 0.0
 
     await manager.broadcast({
         "type": "experiment_published",
@@ -695,6 +736,7 @@ async def list_hypotheses(status: str | None = None, strategy_tag: str | None = 
 @app.post("/api/experiments", response_model=ExperimentResponse)
 async def create_experiment(req: ExperimentCreate):
     config = await get_config_cached()
+    direction = await get_direction()
 
     exp_id = new_id()
     timestamp = now()
@@ -712,11 +754,11 @@ async def create_experiment(req: ExperimentCreate):
         # own-best, and the baseline BEFORE inserting. Otherwise a read
         # after the insert would return the row we just wrote — breaking
         # is_new_best, beats_own_best, and baseline detection.
-        prev_best = await db.get_global_best(conn)
+        prev_best = await db.get_global_best(conn, direction=direction)
         prev_agent_best = await db.get_agent_best(conn, req.agent_id)
         baseline = await get_baseline_score(conn)
 
-        is_new_best = prev_best is None or req.score < prev_best["score"]
+        is_new_best = prev_best is None or db.is_better(direction, req.score, prev_best["score"])
         # beats_own_best: did this experiment improve the publishing agent's
         # own branch? Drives both agent_bests updates and the hypothesis
         # success/fail label — "succeeded" now means "improved my branch".
@@ -724,18 +766,19 @@ async def create_experiment(req: ExperimentCreate):
         # baked into score, so any mixed/fully-infeasible result already
         # loses to a feasible one on score alone.
         beats_own_best = (
-            prev_agent_best is None or req.score < prev_agent_best["score"]
+            prev_agent_best is None
+            or db.is_better(direction, req.score, prev_agent_best["score"])
         )
 
         delta_vs_best_pct: float | None = None
-        if prev_best is not None and prev_best["score"] > 0:
+        if prev_best is not None and prev_best["score"] != 0:
             delta_vs_best_pct = round(
-                ((prev_best["score"] - req.score) / prev_best["score"]) * 100, 6
+                improvement_pct(prev_best["score"], req.score, direction), 6
             )
         delta_vs_own_best_pct: float | None = None
-        if prev_agent_best is not None and prev_agent_best["score"] > 0:
+        if prev_agent_best is not None and prev_agent_best["score"] != 0:
             delta_vs_own_best_pct = round(
-                ((prev_agent_best["score"] - req.score) / prev_agent_best["score"]) * 100, 6
+                improvement_pct(prev_agent_best["score"], req.score, direction), 6
             )
 
         await conn.execute(
@@ -811,10 +854,10 @@ async def create_experiment(req: ExperimentCreate):
             )
 
         await conn.commit()
-        leaderboard = await db.compute_leaderboard(conn, inactive_cutoff())
+        leaderboard = await db.compute_leaderboard(conn, inactive_cutoff(), direction=direction)
         rank = next((e["rank"] for e in leaderboard if e["agent_id"] == req.agent_id), 0)
 
-    imp = improvement_pct(baseline, req.score) if baseline is not None else 0.0
+    imp = improvement_pct(baseline, req.score, direction) if baseline is not None else 0.0
 
     if hyp_status and req.hypothesis_id:
         await manager.broadcast({
@@ -893,8 +936,9 @@ async def create_experiment(req: ExperimentCreate):
 
 @app.get("/api/leaderboard")
 async def get_leaderboard():
+    direction = await get_direction()
     async with db.connect() as conn:
-        leaderboard = await db.compute_leaderboard(conn, inactive_cutoff())
+        leaderboard = await db.compute_leaderboard(conn, inactive_cutoff(), direction=direction)
     return {"updated_at": now(), "entries": leaderboard}
 
 
@@ -1110,6 +1154,71 @@ async def admin_config(req: AdminAuth, key: str = "", value: str = ""):
             await conn.commit()
         _config_cache = None  # invalidate cache
     return {"updated": True}
+
+
+# ── Swarm config (read by every clone, written by the setup wizard) ──
+
+@app.get("/api/swarm_config")
+async def get_swarm_config():
+    """Return the swarm-wide settings every clone needs to run.
+
+    The wizard writes these via POST /api/swarm_config; clones poll this
+    endpoint on startup so all agents in a swarm optimize the same
+    challenge with the same instance set and timeout.
+    """
+    config = await get_config_cached()
+    try:
+        tracks = json.loads(config.get("tracks", "{}"))
+    except Exception:
+        tracks = {}
+    try:
+        timeout = int(config.get("timeout", "30"))
+    except Exception:
+        timeout = 30
+    return {
+        "challenge": config.get("challenge", "vehicle_routing"),
+        "tracks": tracks,
+        "timeout": timeout,
+        "scoring_direction": config.get("scoring_direction", "min"),
+        "swarm_name": config.get("swarm_name", ""),
+        "owner_name": config.get("owner_name", ""),
+    }
+
+
+@app.post("/api/swarm_config")
+async def update_swarm_config(req: SwarmConfigUpdate):
+    """Owner-only endpoint to set swarm-wide configuration.
+
+    Gated by admin_key — same secret used for /api/admin/broadcast.
+    """
+    global _config_cache
+    await verify_admin(req)
+    updates = {
+        "challenge": req.challenge,
+        "tracks": json.dumps(req.tracks),
+        "timeout": str(req.timeout),
+        "scoring_direction": req.scoring_direction,
+        "swarm_name": req.swarm_name,
+        "owner_name": req.owner_name,
+    }
+    async with db.connect() as conn:
+        for key, value in updates.items():
+            await conn.execute(
+                "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                (key, value),
+            )
+        await conn.commit()
+    _config_cache = None
+    # Tell connected dashboards to refetch swarm_config so labels and the
+    # active visualization swap to the new challenge without a page reload.
+    await manager.broadcast({
+        "type": "swarm_config_updated",
+        "challenge": req.challenge,
+        "scoring_direction": req.scoring_direction,
+        "swarm_name": req.swarm_name,
+        "timestamp": now(),
+    })
+    return {"updated": True, **updates, "tracks": req.tracks, "timeout": req.timeout}
 
 
 # ── WebSocket ──

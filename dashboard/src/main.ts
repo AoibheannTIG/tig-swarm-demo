@@ -9,6 +9,10 @@ import {
 } from "./lib/sounds";
 import { initWelcome, toggleWelcome } from "./lib/welcome";
 import { startReplay } from "./lib/replay";
+import {
+  loadSwarmConfig,
+  handleWsEvent as handleSwarmConfigEvent,
+} from "./lib/swarmConfig";
 
 import { StatsPanel } from "./panels/stats";
 import { RoutesPanel } from "./panels/routes";
@@ -41,7 +45,11 @@ const canvas = document.getElementById("particleCanvas") as HTMLCanvasElement;
 initParticles(canvas);
 
 // ── Initialize panels ──
+// Panels are constructed inside `bootstrap()` after loadSwarmConfig() so
+// that init() sees the active challenge on first paint (matters for the
+// routes panel, which renders a placeholder for non-VRP challenges).
 const panels: Panel[] = [];
+let chartPanel: ChartPanel;
 
 function initPanel(PanelClass: new () => Panel, containerId: string) {
   const panel = new PanelClass();
@@ -51,12 +59,14 @@ function initPanel(PanelClass: new () => Panel, containerId: string) {
   return panel;
 }
 
-initPanel(StatsPanel, "panel-stats");
-initPanel(RoutesPanel, "panel-routes");
-const chartPanel = initPanel(ChartPanel, "panel-chart") as ChartPanel;
-initPanel(DiversityPanel, "panel-diversity");
-initPanel(FeedPanel, "panel-feed");
-initPanel(LeaderboardPanel, "panel-leaderboard");
+function constructPanels() {
+  initPanel(StatsPanel, "panel-stats");
+  initPanel(RoutesPanel, "panel-routes");
+  chartPanel = initPanel(ChartPanel, "panel-chart") as ChartPanel;
+  initPanel(DiversityPanel, "panel-diversity");
+  initPanel(FeedPanel, "panel-feed");
+  initPanel(LeaderboardPanel, "panel-leaderboard");
+}
 
 // ── Message dispatch ──
 let soundEnabled = false; // disabled during initial state hydration
@@ -73,6 +83,11 @@ function handleMessage(msg: WSMessage) {
   if (msg.type === "new_global_best") {
     viewportFlash("rgba(0, 229, 255, 0.03)", 150);
   }
+
+  // Refetch swarm config when the owner switches the active challenge.
+  // The fetch is fire-and-forget; panels will see the new config on their
+  // next render via getSwarmConfig().
+  handleSwarmConfigEvent(getApiUrl(), msg);
 
   panels.forEach((panel) => panel.handleMessage(msg));
 }
@@ -218,6 +233,7 @@ document.addEventListener("keydown", (e) => {
 if (isMock) {
   console.log("[Dashboard] Running in MOCK mode");
   soundEnabled = true;
+  constructPanels();
   const mock = new MockDataGenerator();
   mock.onMessage(handleMessage);
   mock.start();
@@ -231,7 +247,13 @@ if (isMock) {
   const apiUrl = getApiUrl();
   console.log(`[Dashboard] Connecting to ${wsUrl}, API: ${apiUrl}`);
 
-  setTimeout(() => loadInitialState(apiUrl), 500);
+  // Load the swarm-wide config first, then construct panels (which read
+  // the config in their init()), then hydrate from /api/state. Falls
+  // back to VRP/min defaults if the config fetch fails.
+  void loadSwarmConfig(apiUrl).then(() => {
+    constructPanels();
+    void loadInitialState(apiUrl);
+  });
 
   const ws = new SwarmWebSocket(wsUrl);
   ws.onMessage(handleMessage);

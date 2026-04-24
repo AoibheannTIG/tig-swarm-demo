@@ -1,245 +1,436 @@
 #!/usr/bin/env python3
-"""Run VRPTW benchmark and output JSON results. Robust to solver failures."""
+"""Run the active challenge's benchmark and emit JSON for publish.py.
 
-import subprocess
+Reads swarm-wide config from `${SERVER_URL}/api/swarm_config` (or from
+`./swarm.config.json` as a fallback for offline use) to pick the challenge,
+the per-track instance counts, and the per-instance solver timeout. Builds
+the right cargo binary, generates instances on first run (cached under
+`datasets/<challenge>/generated/`), then runs solver + evaluator on each
+instance in parallel.
+
+# Scoring
+
+Each upstream evaluator returns a baseline-relative *quality* per instance
+in the integer range [-QUALITY_PRECISION × 10, +QUALITY_PRECISION × 10]
+(QUALITY_PRECISION = 1,000,000). The baseline is the upstream baseline
+algorithm for that challenge:
+
+    - satisfiability: binary (1M if all clauses satisfied, else 0).
+    - vehicle_routing: Solomon nearest-neighbor (`solomon::run`).
+    - knapsack: greedy by value-density (`compute_greedy_baseline`).
+    - job_scheduling: SOTA dispatching rules (`compute_sota_baseline`).
+    - energy_arbitrage: max(greedy, conservative) (`compute_baseline`).
+
+Higher quality is always better. Aggregation is two-step:
+
+    1. Per-track score = arithmetic mean of per-instance quality scores
+       in that track. Infeasible instances contribute `-QUALITY_PRECISION`
+       (the worst feasibly-bounded value).
+    2. Cross-track score = shifted geometric mean across the per-track
+       averages. The shift (+QUALITY_PRECISION × 10 + 1) keeps every
+       value strictly positive so the geometric mean is well-defined for
+       any combination of negative and positive track scores.
+
+The geometric mean rewards balanced performance — a single bad track
+drags the overall score down more than the arithmetic mean would.
+
+Output JSON shape:
+
+    {
+      "challenge": "...",
+      "score": 1234567.8,           # cross-track shifted geo mean of quality
+      "feasible": true,
+      "instances_solved": 25,
+      "instances_feasible": 25,
+      "instances_infeasible": 0,
+      "track_scores": {"track_key": <mean quality>, ...},
+      "viz_data": { ... per-challenge or null ... },
+      # VRP-only legacy fields, present only when the challenge is VRP:
+      "num_vehicles": 96,
+      "total_distance": 12345.6,
+      "route_data": { ... }
+    }
+"""
+
+from __future__ import annotations
+
 import json
 import os
+import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
+import math
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).parent.parent
-DATASET = sys.argv[1] if len(sys.argv) > 1 else str(ROOT_DIR / "datasets/vehicle_routing/HG")
-INSTANCES = [
-    "R1_4_1.txt",
-    "R1_4_2.txt",
-    "R1_4_3.txt",
-    "R1_4_4.txt",
-    "R1_4_5.txt",
-    "R2_4_1.txt",
-    "R2_4_2.txt",
-    "R2_4_3.txt",
-    "R2_4_4.txt",
-    "R2_4_5.txt",
-    "RC1_4_1.txt",
-    "RC1_4_2.txt",
-    "RC1_4_3.txt",
-    "RC1_4_4.txt",
-    "RC1_4_5.txt",
-    "RC2_4_1.txt",
-    "RC2_4_2.txt",
-    "RC2_4_3.txt",
-    "RC2_4_4.txt",
-    "RC2_4_5.txt",
-    "C1_4_1.txt",
-    "C1_4_2.txt",
-    "C2_4_1.txt",
-    "C2_4_2.txt",
-]
-SOLVER_TIMEOUT = 30
 
-def build():
-    subprocess.run(
-        ["cargo", "build", "-r", "--bin", "tig_solver", "--features", "solver,vehicle_routing"],
-        cwd=ROOT_DIR, check=True, capture_output=True,
-    )
-    subprocess.run(
-        ["cargo", "build", "-r", "--bin", "tig_evaluator", "--features", "evaluator,vehicle_routing"],
-        cwd=ROOT_DIR, check=True, capture_output=True,
-    )
+# Mirrors `QUALITY_PRECISION` in src/lib.rs and the upstream tig-monorepo.
+# All vendored evaluators clamp their (baseline-relative) quality to
+# ±10 × QUALITY_PRECISION before scaling, so the final per-instance score
+# is bounded in [-QUALITY_CLAMP, +QUALITY_CLAMP].
+QUALITY_PRECISION = 1_000_000
+QUALITY_CLAMP = 10 * QUALITY_PRECISION
 
-def parse_instance_positions(inst_path: str) -> dict:
-    """Parse node positions from Solomon-format instance file."""
-    positions = {}
-    in_customer = False
-    with open(inst_path) as f:
-        for line in f:
-            line = line.strip()
-            if line.startswith("CUST NO"):
-                in_customer = True
-                continue
-            if in_customer and line:
-                parts = line.split()
-                if len(parts) >= 3:
-                    try:
-                        positions[int(parts[0])] = (int(parts[1]), int(parts[2]))
-                    except ValueError:
-                        pass
-    return positions
+# Per-instance penalty for an infeasible instance. Set to the worst
+# feasible-bounded value rather than -∞ so the per-track mean stays in a
+# sensible range and the shifted geometric mean is well-defined.
+INFEASIBLE_QUALITY = -QUALITY_PRECISION
 
-def parse_solution_routes(sol_path: str) -> list:
-    """Parse routes from solution file."""
-    routes = []
-    with open(sol_path) as f:
-        for line in f:
-            line = line.strip()
-            if line.startswith("Route"):
-                parts = line.split(":")
-                if len(parts) == 2:
-                    nodes = [int(x) for x in parts[1].split() if x.strip()]
-                    routes.append(nodes)
-    return routes
+# Constant added to each per-track mean before taking the geometric mean.
+# Quality range after clamping is [-10M, +10M]; shift by +10M+1 → strictly
+# positive in [1, 20M+1] before geo mean, then unshift the result.
+GEOMEAN_SHIFT = QUALITY_CLAMP + 1
 
-def make_route_data(inst_path: str, sol_path: str) -> dict | None:
-    """Build route_data JSON for dashboard visualization."""
-    positions = parse_instance_positions(inst_path)
-    routes = parse_solution_routes(sol_path)
-    if not positions or not routes:
-        return None
-    depot = positions.get(0, (500, 500))
-    route_data = {
-        "depot": {"x": depot[0], "y": depot[1]},
-        "routes": [],
-    }
-    for i, route_nodes in enumerate(routes):
-        path = []
-        for node in route_nodes:
-            if node in positions:
-                path.append({"x": positions[node][0], "y": positions[node][1], "customer_id": node})
-        route_data["routes"].append({"vehicle_id": i, "path": path})
-    return route_data
+# Wizard-baked URL with env-var override; mirrors scripts/publish.py so the
+# two stay in lockstep when the wizard re-runs.
+SERVER = os.environ.get("TIG_SWARM_SERVER") or "${SERVER_URL}"
+if SERVER.startswith("$"):
+    SERVER = ""  # offline mode — read from swarm.config.json instead
 
 
-def _first_nonempty_line(*chunks: str) -> str:
-    for chunk in chunks:
-        if not chunk:
-            continue
-        for line in chunk.splitlines():
-            line = line.strip()
-            if line:
-                return line
-    return ""
+# ── Config loading ──────────────────────────────────────────────────
 
 
-def parse_evaluator_distance(eval_result: subprocess.CompletedProcess) -> tuple[int | None, str | None]:
-    """Parse strict evaluator JSON output.
+def load_swarm_config() -> dict:
+    """Pull live swarm config from the server, falling back to local cache.
 
-    Returns `(distance, None)` on success, `(None, error)` on failure.
+    The server is the source of truth (the owner can change the active
+    challenge mid-experiment). swarm.config.json is the offline fallback so
+    `python scripts/benchmark.py` works without a server reachable, which
+    is useful for ad-hoc local testing of `algorithm/mod.rs` edits.
     """
-    if eval_result.returncode != 0:
-        msg = _first_nonempty_line(eval_result.stderr, eval_result.stdout)
-        return None, msg or f"evaluator failed (exit {eval_result.returncode})"
+    if SERVER:
+        try:
+            with urllib.request.urlopen(f"{SERVER}/api/swarm_config", timeout=4) as r:
+                return json.load(r)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
+            print(f"warning: couldn't reach {SERVER}/api/swarm_config ({e})", file=sys.stderr)
+    cfg_path = ROOT_DIR / "swarm.config.json"
+    if cfg_path.exists():
+        local = json.loads(cfg_path.read_text())
+        return {
+            "challenge": local.get("challenge", "vehicle_routing"),
+            "tracks": local.get("tracks", {}),
+            "timeout": local.get("timeout", 30),
+            "scoring_direction": local.get("scoring_direction", "min"),
+        }
+    print("error: no swarm config available (server unreachable, no swarm.config.json)", file=sys.stderr)
+    sys.exit(1)
 
+
+# ── Build & instance generation ────────────────────────────────────
+
+
+def build(challenge: str) -> tuple[str, str, str]:
+    """Build solver, evaluator, generator with the active challenge feature.
+    Returns absolute paths to the three binaries."""
+    for binary, feature_set in (
+        ("tig_solver", f"solver,{challenge}"),
+        ("tig_evaluator", f"evaluator,{challenge}"),
+        ("tig_generator", f"generator,{challenge}"),
+    ):
+        subprocess.run(
+            ["cargo", "build", "-r", "--bin", binary, "--features", feature_set],
+            cwd=ROOT_DIR, check=True, capture_output=True,
+        )
+    return (
+        str(ROOT_DIR / "target/release/tig_solver"),
+        str(ROOT_DIR / "target/release/tig_evaluator"),
+        str(ROOT_DIR / "target/release/tig_generator"),
+    )
+
+
+def materialize_instances(
+    challenge: str, tracks: dict, generator_bin: str
+) -> list[tuple[str, str, Path]]:
+    """Generate instances per the active swarm config, cached on disk.
+
+    `tracks` is the `test.json` shape: `{"seed": "test", "track_key": count, ...}`.
+    Each (track_key, count) becomes `count` instances under
+    `datasets/<challenge>/generated/<track_key>/{0..count-1}.txt`. Generation
+    is skipped when the cache already has at least `count` files for the
+    track — re-running the wizard with smaller counts won't regenerate.
+
+    Returns a list of `(track_key, instance_filename, instance_path)`.
+    """
+    seed = str(tracks.get("seed", "test"))
+    out: list[tuple[str, str, Path]] = []
+    base = ROOT_DIR / "datasets" / challenge / "generated"
+    for track_key, count in tracks.items():
+        if track_key == "seed" or not isinstance(count, int) or count <= 0:
+            continue
+        track_dir = base / track_key
+        track_dir.mkdir(parents=True, exist_ok=True)
+        existing = sorted(p for p in track_dir.glob("*.txt"))
+        if len(existing) < count:
+            print(
+                f"  generating {count - len(existing)} new instances for "
+                f"{challenge}/{track_key} (have {len(existing)})…",
+                file=sys.stderr,
+            )
+            subprocess.run(
+                [
+                    generator_bin, challenge, track_key,
+                    "--seed", seed,
+                    "-n", str(count),
+                    "-o", str(track_dir),
+                ],
+                check=True, capture_output=True,
+            )
+        for i in range(count):
+            inst = track_dir / f"{i}.txt"
+            if inst.exists():
+                out.append((track_key, f"{track_key}/{i}", inst))
+    return out
+
+
+# ── Per-instance run ───────────────────────────────────────────────
+
+
+def parse_evaluator_score(eval_result: subprocess.CompletedProcess) -> tuple[float | None, str | None]:
+    if eval_result.returncode != 0:
+        return None, (eval_result.stderr or eval_result.stdout or f"evaluator exit {eval_result.returncode}").splitlines()[0]
     stdout = (eval_result.stdout or "").strip()
     if not stdout:
         return None, "evaluator produced no output"
-
     try:
         payload = json.loads(stdout)
     except json.JSONDecodeError:
-        sample = _first_nonempty_line(stdout)
-        return None, f"invalid evaluator JSON: {sample or 'empty'}"
+        return None, f"invalid evaluator JSON: {stdout[:80]}"
+    score = payload.get("score", payload.get("distance"))
+    if not isinstance(score, (int, float)):
+        return None, "evaluator JSON missing numeric score"
+    return float(score), None
 
-    distance = payload.get("distance")
-    if not isinstance(distance, (int, float)):
-        return None, "evaluator JSON missing numeric distance"
-    if distance < 0:
-        return None, "evaluator distance must be non-negative"
 
-    return int(round(distance)), None
-
-def run_instance(instance_name, dataset_path, solver, evaluator):
-    """Run solver + evaluator for a single instance. Returns a result dict."""
-    inst = dataset_path / instance_name
-    with tempfile.NamedTemporaryFile(suffix=".solution", delete=False) as tmp:
+def run_instance(
+    challenge: str, track_key: str, instance_id: str, instance_path: Path,
+    solver: str, evaluator: str, timeout: int,
+) -> dict:
+    with tempfile.NamedTemporaryFile(suffix=".sol", delete=False) as tmp:
         sol_path = tmp.name
     try:
-        result = subprocess.run(
-            [solver, "vehicle_routing", str(inst), sol_path],
-            capture_output=True, text=True, timeout=SOLVER_TIMEOUT,
-        )
-        if result.returncode != 0 or not os.path.exists(sol_path):
-            return {"instance": instance_name, "error": "solver failed", "feasible": False}
-
-        routes = parse_solution_routes(sol_path)
+        try:
+            subprocess.run(
+                [solver, challenge, str(instance_path), sol_path],
+                capture_output=True, text=True, timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            pass  # save_solution may have written a partial; evaluator will judge
+        if not os.path.exists(sol_path) or os.path.getsize(sol_path) == 0:
+            return {"instance": instance_id, "track": track_key, "error": "no solution saved", "feasible": False}
         eval_result = subprocess.run(
-            [evaluator, "vehicle_routing", str(inst), sol_path],
-            capture_output=True, text=True, timeout=SOLVER_TIMEOUT,
+            [evaluator, challenge, str(instance_path), sol_path],
+            capture_output=True, text=True, timeout=max(10, timeout),
         )
-        dist, err = parse_evaluator_distance(eval_result)
+        score, err = parse_evaluator_score(eval_result)
         if err:
-            return {"instance": instance_name, "error": err, "num_vehicles": len(routes), "feasible": False}
-        rd = make_route_data(str(inst), sol_path)
-        return {"instance": instance_name, "dist": dist, "num_vehicles": len(routes), "feasible": True, "route_data": rd}
-
-    except subprocess.TimeoutExpired:
-        # Solver timed out, but save_solution() may have written a partial solution
-        if os.path.exists(sol_path) and os.path.getsize(sol_path) > 0:
-            try:
-                routes = parse_solution_routes(sol_path)
-                eval_result = subprocess.run(
-                    [evaluator, "vehicle_routing", str(inst), sol_path],
-                    capture_output=True, text=True, timeout=SOLVER_TIMEOUT,
-                )
-                dist, err = parse_evaluator_distance(eval_result)
-                if err:
-                    return {"instance": instance_name, "error": err, "num_vehicles": len(routes), "feasible": False}
-                rd = make_route_data(str(inst), sol_path)
-                return {"instance": instance_name, "dist": dist, "num_vehicles": len(routes), "feasible": True, "route_data": rd}
-            except Exception:
-                return {"instance": instance_name, "error": "timeout (evaluation failed)", "feasible": False}
-        return {"instance": instance_name, "error": "timeout (no solution saved)", "feasible": False}
+            return {"instance": instance_id, "track": track_key, "error": err, "feasible": False}
+        result = {
+            "instance": instance_id,
+            "track": track_key,
+            "score": score,
+            "feasible": True,
+        }
+        if challenge == "vehicle_routing":
+            from_vrp = _vrp_extras(str(instance_path), sol_path)
+            result.update(from_vrp)
+        return result
     finally:
         if os.path.exists(sol_path):
             os.unlink(sol_path)
 
 
-def main():
-    print("Building solver...", file=sys.stderr)
-    build()
-    print(f"Running benchmark on {DATASET}...", file=sys.stderr)
+# ── VRP-specific extras (route_data + num_vehicles) ───────────────
 
-    solver = str(ROOT_DIR / "target/release/tig_solver")
-    evaluator = str(ROOT_DIR / "target/release/tig_evaluator")
 
-    total_dist = 0
-    total_vehicles = 0
-    solved = 0
+def _vrp_parse_positions(inst_path: str) -> dict:
+    positions = {}
+    in_customer = False
+    try:
+        with open(inst_path) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("CUST NO"):
+                    in_customer = True
+                    continue
+                if in_customer and line:
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        try:
+                            positions[int(parts[0])] = (int(parts[1]), int(parts[2]))
+                        except ValueError:
+                            pass
+    except OSError:
+        pass
+    return positions
+
+
+def _vrp_parse_routes(sol_path: str) -> list:
+    routes = []
+    try:
+        with open(sol_path) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("Route"):
+                    parts = line.split(":")
+                    if len(parts) == 2:
+                        nodes = [int(x) for x in parts[1].split() if x.strip()]
+                        routes.append(nodes)
+    except OSError:
+        pass
+    return routes
+
+
+def _vrp_extras(inst_path: str, sol_path: str) -> dict:
+    positions = _vrp_parse_positions(inst_path)
+    routes = _vrp_parse_routes(sol_path)
+    if not positions or not routes:
+        return {"num_vehicles": len(routes), "route_data": None}
+    depot = positions.get(0, (500, 500))
+    route_data = {
+        "depot": {"x": depot[0], "y": depot[1]},
+        "routes": [
+            {
+                "vehicle_id": i,
+                "path": [
+                    {"x": positions[node][0], "y": positions[node][1], "customer_id": node}
+                    for node in route_nodes
+                    if node in positions
+                ],
+            }
+            for i, route_nodes in enumerate(routes)
+        ],
+    }
+    return {"num_vehicles": len(routes), "route_data": route_data}
+
+
+# ── Aggregation & main ────────────────────────────────────────────
+
+
+def _shifted_geomean(values: list[float], shift: float = GEOMEAN_SHIFT) -> float:
+    """Geometric mean of `values` after adding `shift`, then subtract `shift`
+    back so the result is on the original scale.
+
+    Every per-track mean lives in [-QUALITY_CLAMP, +QUALITY_CLAMP], so the
+    shifted values live in [1, 2 × QUALITY_CLAMP + 1] — strictly positive,
+    so the geometric mean is well-defined regardless of how many tracks
+    underperformed the baseline. The result is approximately the per-track
+    average when all tracks score similarly, but penalised toward the
+    worst track when the spread is wide.
+    """
+    if not values:
+        return 0.0
+    log_sum = sum(math.log(v + shift) for v in values)
+    return math.exp(log_sum / len(values)) - shift
+
+
+def aggregate(results: list[dict]) -> dict:
+    """Group per-instance qualities by track, average each track, then
+    combine via shifted geometric mean. Infeasible instances contribute
+    `INFEASIBLE_QUALITY` to their track's average — they're worse than
+    matching the baseline, but bounded so the geomean stays well-defined.
+    """
+    by_track: dict[str, list[float]] = defaultdict(list)
     feasible_count = 0
     infeasible_count = 0
-    errors = []
-    all_route_data = {}
+    for r in results:
+        track = r.get("track", "unknown")
+        if r.get("feasible"):
+            by_track[track].append(float(r["score"]))
+            feasible_count += 1
+        else:
+            by_track[track].append(float(INFEASIBLE_QUALITY))
+            infeasible_count += 1
 
-    dataset_path = Path(DATASET)
-    workers = min(len(INSTANCES), os.cpu_count() or 1)
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(run_instance, name, dataset_path, solver, evaluator): name
-            for name in INSTANCES
-        }
-        for future in as_completed(futures):
-            r = future.result()
-            if "error" in r:
-                errors.append(f"{r['instance']}: {r['error']}")
-                infeasible_count += 1
-                solved += 1
-            else:
-                solved += 1
-                feasible_count += 1
-                total_dist += r["dist"]
-                total_vehicles += r["num_vehicles"]
-                if r.get("route_data"):
-                    all_route_data[r["instance"]] = r["route_data"]
-
-    all_feasible = infeasible_count == 0 and feasible_count > 0
-    PENALTY_PER_INFEASIBLE = 1_000_000
-    num_instances = len(INSTANCES)
-    score = (total_dist + infeasible_count * PENALTY_PER_INFEASIBLE) / max(num_instances, 1)
-
-    result = {
-        "score": score,
-        "total_distance": total_dist,
-        "num_vehicles": total_vehicles,
-        "feasible": all_feasible,
-        "instances_solved": solved,
-        "instances_feasible": feasible_count,
-        "instances_infeasible": infeasible_count,
-        "route_data": all_route_data if all_route_data else None,
-        "errors": errors if errors else None,
+    # Per-track arithmetic mean of per-instance quality.
+    track_scores: dict[str, float] = {
+        track: sum(scores) / len(scores)
+        for track, scores in by_track.items()
+        if scores
     }
 
-    print(json.dumps(result, indent=2))
+    overall = _shifted_geomean(list(track_scores.values()))
+
+    return {
+        "score": overall,
+        "feasible": infeasible_count == 0 and feasible_count > 0,
+        "instances_solved": len(results),
+        "instances_feasible": feasible_count,
+        "instances_infeasible": infeasible_count,
+        "track_scores": track_scores,
+    }
+
+
+def main() -> int:
+    print("Loading swarm config…", file=sys.stderr)
+    cfg = load_swarm_config()
+    challenge = cfg["challenge"]
+    timeout = int(cfg.get("timeout", 30))
+    # Direction is no longer used by aggregation — every challenge's
+    # quality score is higher-is-better. Kept here for forward-compat
+    # with downstream callers that still read it.
+    _direction = cfg.get("scoring_direction", "max")  # noqa: F841
+    tracks = cfg.get("tracks") or {}
+
+    print(f"Building tig binaries for {challenge}…", file=sys.stderr)
+    solver, evaluator, generator = build(challenge)
+
+    print(f"Materialising instances under datasets/{challenge}/generated/…", file=sys.stderr)
+    instances = materialize_instances(challenge, tracks, generator)
+    if not instances:
+        print(
+            "error: no instances to run. Run `python setup.py init` to set track counts, "
+            "or check datasets/<challenge>/test.json.",
+            file=sys.stderr,
+        )
+        return 2
+    print(f"  {len(instances)} instance(s) total", file=sys.stderr)
+
+    workers = min(len(instances), os.cpu_count() or 1)
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(run_instance, challenge, tk, iid, ipath, solver, evaluator, timeout): iid
+            for tk, iid, ipath in instances
+        }
+        for fut in as_completed(futures):
+            results.append(fut.result())
+
+    agg = aggregate(results)
+    out: dict = {
+        "challenge": challenge,
+        **agg,
+        "errors": [f"{r['instance']}: {r['error']}" for r in results if "error" in r] or None,
+    }
+
+    # VRP-specific legacy fields for the existing dashboard route panel.
+    if challenge == "vehicle_routing":
+        all_routes = {
+            r["instance"]: r["route_data"]
+            for r in results
+            if r.get("route_data")
+        }
+        out["num_vehicles"] = sum(r.get("num_vehicles", 0) for r in results if r.get("feasible"))
+        out["total_distance"] = sum(r["score"] for r in results if r.get("feasible"))
+        out["route_data"] = all_routes or None
+        out["viz_data"] = all_routes or None  # generic alias for non-VRP dashboards
+    else:
+        # Other challenges leave viz_data null until per-challenge dashboard
+        # work in Phase 4 wires up SAT/knapsack/JSP/energy visualizations.
+        out["viz_data"] = None
+        # publish.py expects num_vehicles + total_distance (legacy schema).
+        # Fill harmless defaults so the schema doesn't reject the payload.
+        out["num_vehicles"] = 0
+        out["total_distance"] = out["score"]
+
+    print(json.dumps(out, indent=2))
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

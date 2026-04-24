@@ -2,6 +2,7 @@ import * as d3 from "d3";
 import type { Panel, WSMessage, RouteData, AllRouteData, RoutePoint } from "../types";
 import { getAgentColor, getRouteColor } from "../lib/colors";
 import { BKS_AVERAGE, bksGapPct } from "../lib/bks";
+import { getSwarmConfig } from "../lib/swarmConfig";
 
 // Drawing sizes as fractions of the viewBox side length. Everything else in
 // this file should reference these constants — never hardcode pixel/unit
@@ -98,6 +99,24 @@ export class RoutesPanel implements Panel {
   }
 
   init(container: HTMLElement) {
+    // The routes visualization is VRP-only — depot, customer-position
+    // tour drawing, BKS comparison all assume VRPTW geometry. For other
+    // active challenges, render a placeholder. (Phase 4 follow-up: wire
+    // per-challenge SAT / Knapsack / JSP / Energy panels into this slot.)
+    // main.ts awaits loadSwarmConfig() before constructing this panel.
+    const activeChallenge = getSwarmConfig().challenge;
+    if (activeChallenge !== "vehicle_routing") {
+      container.innerHTML = `
+        <div class="panel-inner routes-panel">
+          <div class="panel-label">VISUALIZATION</div>
+          <div class="routes-agent-name">Active challenge: ${activeChallenge}</div>
+          <div style="padding: 24px; opacity: 0.6; text-align: center; line-height: 1.6;">
+            Per-challenge visualization not yet wired up.<br>
+            Score, leaderboard, feed, and chart panels still work.
+          </div>
+        </div>`;
+      return;
+    }
     container.innerHTML = `
       <div class="panel-inner routes-panel">
         <div class="panel-label">ROUTES</div>

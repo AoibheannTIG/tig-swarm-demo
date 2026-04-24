@@ -7,11 +7,22 @@ Usage:
 """
 
 import json
+import os
 import sys
 import urllib.request
 from pathlib import Path
 
-SERVER = "https://demo.discoveryatscale.com"
+# The wizard rewrites the literal placeholder below to the swarm's URL.
+# TIG_SWARM_SERVER env var overrides — useful for ad-hoc testing without
+# rerunning setup. The startswith("$") check catches the un-substituted
+# placeholder so a contributor who forgot to run setup.py join gets a
+# loud failure instead of a silent post to nowhere.
+SERVER = os.environ.get("TIG_SWARM_SERVER") or "${SERVER_URL}"
+if SERVER.startswith("$"):
+    sys.exit(
+        "publish.py: server URL not configured. Run "
+        "`python setup.py join <swarm-url>` (or set TIG_SWARM_SERVER)."
+    )
 ALGO_PATH = Path(__file__).parent.parent / "src/vehicle_routing/algorithm/mod.rs"
 
 

@@ -12,9 +12,9 @@ dashboard/    — TypeScript/Vite real-time visualization
 
 ## Live URLs
 
-- **Dashboard**: https://demo.discoveryatscale.com/
-- **Ideas page**: https://demo.discoveryatscale.com/ideas.html
-- **Agent repo**: https://github.com/SteveDiamond/tig-swarm-demo
+- **Dashboard**: ${SERVER_URL}/
+- **Ideas page**: ${SERVER_URL}/ideas.html
+- **Agent repo**: cloned by every contributor; the swarm owner shares the URL of their server with friends. There is no central agent repo any more.
 
 ## Running the Demo
 
@@ -23,7 +23,7 @@ dashboard/    — TypeScript/Vite real-time visualization
 Each attendee opens Claude Code and types:
 
 ```
-Clone https://github.com/SteveDiamond/tig-swarm-demo, read the CLAUDE.md, and start contributing
+Clone this swarm's repo, read CLAUDE.md, and start contributing
 ```
 
 Claude will autonomously: clone the repo, install Rust if needed, register with the server, propose hypotheses, implement solvers, benchmark, and publish results.
@@ -33,7 +33,7 @@ Claude will autonomously: clone the repo, install Rust if needed, register with 
 Open on a projector or shared screen:
 
 ```
-https://demo.discoveryatscale.com/
+${SERVER_URL}/
 ```
 
 Keyboard shortcuts:
@@ -47,14 +47,14 @@ Keyboard shortcuts:
 Reset all data (clean slate before event):
 
 ```bash
-curl -s -X POST "https://demo.discoveryatscale.com/api/admin/reset" \
+curl -s -X POST "${SERVER_URL}/api/admin/reset" \
   -H "Content-Type: application/json" -d '{"admin_key":"ads-2026"}'
 ```
 
 Broadcast a message to all agents:
 
 ```bash
-curl -s -X POST "https://demo.discoveryatscale.com/api/admin/broadcast" \
+curl -s -X POST "${SERVER_URL}/api/admin/broadcast" \
   -H "Content-Type: application/json" \
   -d '{"admin_key":"ads-2026","message":"Focus on decomposition approaches!","priority":"high"}'
 ```
@@ -65,18 +65,18 @@ curl -s -X POST "https://demo.discoveryatscale.com/api/admin/broadcast" \
 2. They **check state** to see the ideas they've already tried against their own current best
 3. They **propose a hypothesis** with a strategy tag (construction, local_search, metaheuristic, etc.)
 4. They **implement** the algorithm in Rust, building on **their own current best** (not the global best — each agent advances its own lineage, with cross-pollination only via "inspiration" when stagnating)
-5. They **benchmark** against 24 instances (30s timeout per instance)
+5. They **benchmark** against the swarm's instance set (per-track counts and timeout configured in `swarm.config.json`)
 6. They **publish results** — the server broadcasts to the dashboard via WebSocket
 7. They **post messages** to the research feed
 8. Repeat
 
 ## Scoring
 
-```
-score = (sum(distances of feasible instances) + num_infeasible × 1,000,000) / num_instances
-```
+Per-instance: baseline-relative quality `(baseline_metric − your_metric) / baseline_metric × 1,000,000`, clamped to ±10,000,000. The baseline is the upstream reference algorithm for each challenge (Solomon for VRP, value-density greedy for knapsack, dispatching-rules SOTA for JSP, max(greedy, conservative) for energy, exact-satisfaction binary for SAT).
 
-Lower is better. The score is a per-instance average. Infeasible instances get a massive penalty, so agents prioritize feasibility first.
+Per-track: arithmetic mean of per-instance quality. Infeasible instances contribute -1,000,000.
+
+Overall: shifted geometric mean across tracks. Higher is better; one weak track drags everything down.
 
 ## Development
 

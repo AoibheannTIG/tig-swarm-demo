@@ -36,21 +36,32 @@ fn run_solve(
     );
     let content = fs::read_to_string(instance_file)?;
 
-    match challenge {
-        #[cfg(feature = "vehicle_routing")]
-        "vehicle_routing" => {
-            let instance = challenges::vehicle_routing::Challenge::from_txt(&content)?;
-            let save_solution_fn =
-                |solution: &challenges::vehicle_routing::Solution| -> Result<()> {
-                    fs::write(&solution_file, solution.to_txt())?;
-                    Ok(())
-                };
-            challenges::vehicle_routing::algorithm::solve_challenge(
+    macro_rules! dispatch_solve {
+        ($c:ident) => {{
+            let instance = challenges::$c::Challenge::from_txt(&content)?;
+            let save_solution_fn = |solution: &challenges::$c::Solution| -> Result<()> {
+                fs::write(&solution_file, solution.to_txt())?;
+                Ok(())
+            };
+            challenges::$c::algorithm::solve_challenge(
                 &instance,
                 &save_solution_fn,
                 hyperparameters,
             )?;
-        }
+        }};
+    }
+
+    match challenge {
+        #[cfg(feature = "satisfiability")]
+        "satisfiability" => dispatch_solve!(satisfiability),
+        #[cfg(feature = "vehicle_routing")]
+        "vehicle_routing" => dispatch_solve!(vehicle_routing),
+        #[cfg(feature = "knapsack")]
+        "knapsack" => dispatch_solve!(knapsack),
+        #[cfg(feature = "job_scheduling")]
+        "job_scheduling" => dispatch_solve!(job_scheduling),
+        #[cfg(feature = "energy_arbitrage")]
+        "energy_arbitrage" => dispatch_solve!(energy_arbitrage),
         _ => anyhow::bail!(
             "Unknown or disabled challenge: {}. Enable the corresponding crate feature (e.g. `--features {}`) when building.",
             challenge,

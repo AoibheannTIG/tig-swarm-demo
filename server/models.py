@@ -7,10 +7,18 @@ def new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
-def improvement_pct(baseline: float, score: float) -> float:
-    if baseline <= 0:
+def improvement_pct(baseline: float, score: float, direction: str = "min") -> float:
+    """Percentage improvement of `score` over `baseline`.
+
+    For min-direction challenges, lower is better, so positive improvement
+    means score < baseline. For max-direction (knapsack/SAT/energy), the
+    sign flips. baseline == 0 is degenerate; report 0.
+    """
+    if baseline == 0:
         return 0.0
-    return round(((baseline - score) / baseline) * 100, 2)
+    if direction == "max":
+        return round(((score - baseline) / abs(baseline)) * 100, 2)
+    return round(((baseline - score) / abs(baseline)) * 100, 2)
 
 
 # ── Request models ──
@@ -84,6 +92,31 @@ class AdminAuth(BaseModel):
 class AdminBroadcast(AdminAuth):
     message: str
     priority: Literal["normal", "high"] = "normal"
+
+
+# Swarm-wide configuration set by the owner via the setup wizard.
+# challenge: which TIG challenge this swarm is optimizing.
+# tracks: object mirroring the per-challenge test.json — keys are track
+#         labels (e.g. "n_nodes=600"), values are instance counts.
+# timeout: per-instance solver timeout in seconds.
+# scoring_direction: "min" (smaller score wins) or "max" (larger wins).
+# swarm_name / owner_name are display-only.
+ChallengeName = Literal[
+    "satisfiability",
+    "vehicle_routing",
+    "knapsack",
+    "job_scheduling",
+    "energy_arbitrage",
+]
+
+
+class SwarmConfigUpdate(AdminAuth):
+    challenge: ChallengeName
+    tracks: dict
+    timeout: int
+    scoring_direction: Literal["min", "max"]
+    swarm_name: str = ""
+    owner_name: str = ""
 
 
 class MessageCreate(BaseModel):

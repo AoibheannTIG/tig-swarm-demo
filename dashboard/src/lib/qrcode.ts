@@ -1,4 +1,7 @@
-const REPO_URL = "https://demo.discoveryatscale.com";
+// The dashboard is served from the swarm's own URL, so the join target is
+// just window.location.origin. Per-deploy isolation means there is no
+// hardcoded host any more.
+const REPO_URL = typeof window !== "undefined" ? window.location.origin : "";
 
 let overlayEl: HTMLElement | null = null;
 let visible = false;

@@ -105,8 +105,18 @@ CREATE INDEX IF NOT EXISTS idx_hyp_agent_target ON hypotheses(agent_id, target_b
 """
 
 DEFAULT_CONFIG = {
-    "benchmark_instances": '["R1_4_1","R1_4_2","R1_4_3","R1_4_4","R1_4_5","R2_4_1","R2_4_2","R2_4_3","R2_4_4","R2_4_5","RC1_4_1","RC1_4_2","RC1_4_3","RC1_4_4","RC1_4_5","RC2_4_1","RC2_4_2","RC2_4_3","RC2_4_4","RC2_4_5","C1_4_1","C1_4_2","C2_4_1","C2_4_2"]',
     "admin_key": "ads-2026",
+    # Swarm-wide configuration written by the setup wizard via
+    # POST /api/swarm_config and read by every clone via GET /api/swarm_config.
+    # The defaults below are pre-wizard placeholders — `python setup.py init`
+    # overwrites every key. `tracks` is the dict shape that mirrors
+    # datasets/<challenge>/test.json (instance counts per track key).
+    "challenge": "vehicle_routing",
+    "tracks": "{}",
+    "timeout": "30",
+    "scoring_direction": "max",
+    "swarm_name": "",
+    "owner_name": "",
 }
 
 
@@ -196,16 +206,31 @@ async def get_config(conn: aiosqlite.Connection) -> dict:
     return {row["key"]: row["value"] for row in rows}
 
 
-async def get_global_best(conn: aiosqlite.Connection) -> dict | None:
+def _direction_order(direction: str) -> str:
+    # Min-direction challenges (VRP, JSP) want lower scores at the top of
+    # the leaderboard; max-direction challenges (knapsack, SAT, energy)
+    # want higher. Validated to a small set so callers can't slip raw SQL
+    # through.
+    return "DESC" if direction == "max" else "ASC"
+
+
+def is_better(direction: str, candidate: float, prior: float) -> bool:
+    return candidate > prior if direction == "max" else candidate < prior
+
+
+async def get_global_best(
+    conn: aiosqlite.Connection, direction: str = "min"
+) -> dict | None:
     # Global best is the best-scoring `agent_bests` row — i.e. whichever
-    # agent's branch currently holds the lowest feasible score. `id` is
+    # agent's branch currently holds the leading feasible score. `id` is
     # aliased to experiment_id so callers that expect the old experiments
     # shape (best["id"] meaning the experiment row) keep working.
+    order = _direction_order(direction)
     cursor = await conn.execute(
-        "SELECT agent_id, experiment_id as id, experiment_id, algorithm_code, "
-        "       score, feasible, num_vehicles, total_distance, route_data, updated_at "
-        "FROM agent_bests WHERE feasible = 1 "
-        "ORDER BY score ASC LIMIT 1"
+        f"SELECT agent_id, experiment_id as id, experiment_id, algorithm_code, "
+        f"       score, feasible, num_vehicles, total_distance, route_data, updated_at "
+        f"FROM agent_bests WHERE feasible = 1 "
+        f"ORDER BY score {order} LIMIT 1"
     )
     row = await cursor.fetchone()
     return dict(row) if row else None
@@ -259,25 +284,27 @@ async def upsert_agent_best(
 async def list_agent_bests(
     conn: aiosqlite.Connection,
     exclude_agent_ids: list[str] | None = None,
+    direction: str = "min",
 ) -> list[dict]:
     # All feasible agent-bests, optionally excluding specific agent ids.
     # Returned shape matches `get_global_best` so callers can treat the
     # rows interchangeably.
     exclude = exclude_agent_ids or []
+    order = _direction_order(direction)
     if exclude:
         placeholders = ",".join("?" for _ in exclude)
         query = (
             "SELECT agent_id, experiment_id as id, experiment_id, algorithm_code, "
             "       score, feasible, num_vehicles, total_distance, route_data, updated_at "
             f"FROM agent_bests WHERE feasible = 1 AND agent_id NOT IN ({placeholders}) "
-            "ORDER BY score ASC"
+            f"ORDER BY score {order}"
         )
         cursor = await conn.execute(query, exclude)
     else:
         cursor = await conn.execute(
-            "SELECT agent_id, experiment_id as id, experiment_id, algorithm_code, "
-            "       score, feasible, num_vehicles, total_distance, route_data, updated_at "
-            "FROM agent_bests WHERE feasible = 1 ORDER BY score ASC"
+            f"SELECT agent_id, experiment_id as id, experiment_id, algorithm_code, "
+            f"       score, feasible, num_vehicles, total_distance, route_data, updated_at "
+            f"FROM agent_bests WHERE feasible = 1 ORDER BY score {order}"
         )
     return [dict(row) for row in await cursor.fetchall()]
 
@@ -307,11 +334,15 @@ async def get_all_agent_names(conn: aiosqlite.Connection) -> set[str]:
 async def compute_leaderboard(
     conn: aiosqlite.Connection,
     inactive_cutoff: str | None = None,
+    direction: str = "min",
 ) -> list[dict]:
     # All counters are stored directly on the agents table and updated
     # atomically by POST /api/iterations.  best_score comes from agent_bests.
+    # `direction` flips the ORDER BY so max-direction challenges (knapsack,
+    # SAT, energy) put higher scores at the top.
+    order = _direction_order(direction)
     cursor = await conn.execute(
-        """
+        f"""
         SELECT
             a.id   as agent_id,
             a.name as agent_name,
@@ -322,7 +353,7 @@ async def compute_leaderboard(
             ab.score as best_score
         FROM agents a
         LEFT JOIN agent_bests ab ON ab.agent_id = a.id AND ab.feasible = 1
-        ORDER BY best_score IS NULL, best_score ASC, a.name ASC
+        ORDER BY best_score IS NULL, best_score {order}, a.name ASC
         """
     )
     rows = await cursor.fetchall()

@@ -20,6 +20,12 @@ rayon = {version= "1.10", optional = true}
 serde = { version = "1.0.196", features = ["derive"] }
 serde_json = { version = "1.0.113" }
 statrs = "0.18.0"
+# Compressed-binary serde used by SAT, knapsack and energy_arbitrage; and
+# nalgebra is used by energy_arbitrage's DC power-flow utilities.
+base64 = "0.21"
+bincode = "1.3"
+flate2 = "1.0"
+nalgebra = "0.33"
 
 [[bin]]
 name = "tig_generator"
@@ -37,10 +43,15 @@ path = "src/main_evaluator.rs"
 required-features = ["evaluator"]
 
 [features]
+satisfiability = []
 vehicle_routing = []
+knapsack = []
+job_scheduling = []
+energy_arbitrage = []
 
-# Convenience feature sets for the bins.
-generator = ["rayon", "vehicle_routing"]
-evaluator = ["vehicle_routing"]
+# Convenience feature sets for the bins. Each binary needs at least one
+# challenge feature enabled — pick e.g. `--features solver,knapsack`.
+generator = ["rayon"]
+evaluator = []
 solver = []
 baseline = []

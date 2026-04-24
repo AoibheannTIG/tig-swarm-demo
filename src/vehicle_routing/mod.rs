@@ -193,8 +193,29 @@ impl Challenge {
         Ok(total_distance)
     }
 
-    pub fn evaluate_solution(&self, solution: &Solution) -> Result<f32> {
-        Ok(self.evaluate_total_distance(solution)? as f32)
+    /// Baseline-relative quality, matching upstream tig-monorepo
+    /// (and the other four challenges in this swarm-demo).
+    ///
+    /// quality = (baseline_distance − our_distance) / baseline_distance
+    /// clamped to ±10 and scaled by QUALITY_PRECISION (1,000,000).
+    /// Higher is better. Beating the Solomon baseline yields a positive
+    /// score; underperforming it yields a negative score; matching it
+    /// yields zero.
+    pub fn evaluate_solution(&self, solution: &Solution) -> Result<i32> {
+        let total_distance = self.evaluate_total_distance(solution)?;
+        // Recompute the Solomon baseline at evaluation time. Marginally
+        // slower than caching it on Challenge, but avoids a serialization
+        // change to the existing Solomon-format challenge files (HG/*) and
+        // matches the upstream contract for the other vendored challenges,
+        // which also call `compute_*_baseline()` inline.
+        let baseline_solution = crate::vehicle_routing::solomon::run(self)?;
+        let baseline_distance = self.evaluate_total_distance(&baseline_solution)?;
+        if baseline_distance <= 0 {
+            return Ok(0);
+        }
+        let quality = (baseline_distance as f64 - total_distance as f64) / baseline_distance as f64;
+        let quality = quality.clamp(-10.0, 10.0) * crate::QUALITY_PRECISION as f64;
+        Ok(quality.round() as i32)
     }
 }
 
