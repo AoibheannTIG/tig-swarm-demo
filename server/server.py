@@ -983,13 +983,15 @@ async def list_messages(limit: int = 50):
 
 @app.get("/api/diversity")
 async def get_diversity():
+    direction = await get_direction()
+    order = db._direction_order(direction)
     async with db.connect() as conn:
         cursor = await conn.execute(
-            """SELECT ab.agent_id, a.name as agent_name, ab.algorithm_code
+            f"""SELECT ab.agent_id, a.name as agent_name, ab.algorithm_code
                FROM agent_bests ab
                JOIN agents a ON a.id = ab.agent_id
                WHERE ab.feasible = 1
-               ORDER BY ab.score ASC"""
+               ORDER BY ab.score {order}"""
         )
         rows = [dict(row) for row in await cursor.fetchall()]
 
@@ -1055,17 +1057,19 @@ async def get_top_scores(limit: int = 20):
     # appear multiple times — each row is one iteration, not a per-agent
     # roll-up. title / strategy_tag come back null when the experiment has
     # no associated hypothesis (legacy/seed rows).
+    direction = await get_direction()
+    order = db._direction_order(direction)
     limit = max(1, min(limit, 100))
     async with db.connect() as conn:
         cursor = await conn.execute(
-            """SELECT e.id AS experiment_id, e.score, e.created_at,
+            f"""SELECT e.id AS experiment_id, e.score, e.created_at,
                       e.agent_id, a.name AS agent_name,
                       h.strategy_tag, h.title
                FROM experiments e
                LEFT JOIN hypotheses h ON h.id = e.hypothesis_id
                LEFT JOIN agents a ON a.id = e.agent_id
                WHERE e.feasible = 1
-               ORDER BY e.score ASC
+               ORDER BY e.score {order}
                LIMIT ?""",
             (limit,),
         )

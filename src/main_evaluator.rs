@@ -30,9 +30,8 @@ fn run_evaluate(challenge: &str, instance_file: &Path, solution_file: &Path) -> 
     let instance_content = fs::read_to_string(instance_file)?;
     let solution_content = fs::read_to_string(solution_file)?;
 
-    // Each challenge's evaluate_solution returns its own numeric type
-    // (i32 for SAT/knapsack, f32 for VRP, f64 for energy). Cast everything
-    // to f64 so the match arms have a uniform type.
+    // All challenges return Result<i32> (baseline-relative quality).
+    // Cast to f64 for uniform JSON output.
     macro_rules! dispatch_evaluate {
         ($c:ident) => {{
             let instance = challenges::$c::Challenge::from_txt(&instance_content)?;

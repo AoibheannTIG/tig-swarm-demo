@@ -12,8 +12,8 @@ dashboard/    — TypeScript/Vite real-time visualization
 
 ## Live URLs
 
-- **Dashboard**: ${SERVER_URL}/
-- **Ideas page**: ${SERVER_URL}/ideas.html
+- **Dashboard**: http://localhost:8080/
+- **Ideas page**: http://localhost:8080/ideas.html
 - **Agent repo**: cloned by every contributor; the swarm owner shares the URL of their server with friends. There is no central agent repo any more.
 
 ## Running the Demo
@@ -33,7 +33,7 @@ Claude will autonomously: clone the repo, install Rust if needed, register with 
 Open on a projector or shared screen:
 
 ```
-${SERVER_URL}/
+http://localhost:8080/
 ```
 
 Keyboard shortcuts:
@@ -47,14 +47,14 @@ Keyboard shortcuts:
 Reset all data (clean slate before event):
 
 ```bash
-curl -s -X POST "${SERVER_URL}/api/admin/reset" \
+curl -s -X POST "http://localhost:8080/api/admin/reset" \
   -H "Content-Type: application/json" -d '{"admin_key":"ads-2026"}'
 ```
 
 Broadcast a message to all agents:
 
 ```bash
-curl -s -X POST "${SERVER_URL}/api/admin/broadcast" \
+curl -s -X POST "http://localhost:8080/api/admin/broadcast" \
   -H "Content-Type: application/json" \
   -d '{"admin_key":"ads-2026","message":"Focus on decomposition approaches!","priority":"high"}'
 ```

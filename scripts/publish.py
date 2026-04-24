@@ -17,13 +17,27 @@ from pathlib import Path
 # rerunning setup. The startswith("$") check catches the un-substituted
 # placeholder so a contributor who forgot to run setup.py join gets a
 # loud failure instead of a silent post to nowhere.
-SERVER = os.environ.get("TIG_SWARM_SERVER") or "${SERVER_URL}"
+SERVER = os.environ.get("TIG_SWARM_SERVER") or "http://localhost:8080"
 if SERVER.startswith("$"):
     sys.exit(
         "publish.py: server URL not configured. Run "
         "`python setup.py join <swarm-url>` (or set TIG_SWARM_SERVER)."
     )
-ALGO_PATH = Path(__file__).parent.parent / "src/vehicle_routing/algorithm/mod.rs"
+ROOT = Path(__file__).parent.parent
+
+
+def _resolve_algo_path() -> Path:
+    """Determine the active challenge's algorithm file from swarm.config.json."""
+    cfg_path = ROOT / "swarm.config.json"
+    if cfg_path.exists():
+        try:
+            cfg = json.loads(cfg_path.read_text())
+            algo = cfg.get("algorithm_path")
+            if algo:
+                return ROOT / algo
+        except Exception:
+            pass
+    return ROOT / "src" / "vehicle_routing" / "algorithm" / "mod.rs"
 
 
 def main():
@@ -41,7 +55,11 @@ def main():
     notes = sys.argv[5] if len(sys.argv) > 5 else ""
 
     bench = json.load(sys.stdin)
-    code = ALGO_PATH.read_text()
+
+    algo_path = _resolve_algo_path()
+    if not algo_path.exists():
+        sys.exit(f"publish.py: algorithm file not found: {algo_path}")
+    code = algo_path.read_text()
 
     payload = {
         "agent_id": agent_id,
@@ -51,10 +69,12 @@ def main():
         "algorithm_code": code,
         "score": bench["score"],
         "feasible": bench["feasible"],
-        "num_vehicles": bench["num_vehicles"],
+        "num_vehicles": bench.get("num_vehicles", 0),
         "total_distance": bench.get("total_distance", bench["score"]),
         "notes": notes,
-        "route_data": bench.get("route_data"),
+        "route_data": bench.get("viz_data") or bench.get("route_data"),
+        "track_scores": bench.get("track_scores"),
+        "challenge": bench.get("challenge"),
     }
 
     req = urllib.request.Request(
@@ -64,9 +84,15 @@ def main():
         method="POST",
     )
 
-    with urllib.request.urlopen(req) as resp:
-        result = json.load(resp)
-        print(json.dumps(result, indent=2))
+    try:
+        with urllib.request.urlopen(req) as resp:
+            result = json.load(resp)
+            print(json.dumps(result, indent=2))
+    except urllib.error.URLError as e:
+        sys.exit(f"publish.py: failed to reach server at {SERVER}: {e}")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        sys.exit(f"publish.py: server returned {e.code}: {body}")
 
 
 if __name__ == "__main__":

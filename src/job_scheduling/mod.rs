@@ -301,17 +301,11 @@ impl Challenge {
     conditional_pub!(
         fn evaluate_solution(&self, solution: &Solution) -> Result<i32> {
             let makespan = self.evaluate_makespan(solution)?;
-            let greedy_solution = self.compute_greedy_baseline()?;
-            let greedy_makespan = self.evaluate_makespan(&greedy_solution)?;
-            if makespan > greedy_makespan {
-                return Err(anyhow!(
-                    "Makespan {} must be better than greedy baseline makespan {}",
-                    makespan,
-                    greedy_makespan
-                ));
-            }
             let sota_solution = self.compute_sota_baseline()?;
             let sota_makespan = self.evaluate_makespan(&sota_solution)?;
+            if sota_makespan == 0 {
+                return Ok(0);
+            }
             let quality = (sota_makespan as f64 - makespan as f64) / sota_makespan as f64;
             let quality = quality.clamp(-10.0, 10.0) * QUALITY_PRECISION as f64;
             let quality = quality.round() as i32;

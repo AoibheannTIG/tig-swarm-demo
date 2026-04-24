@@ -220,15 +220,9 @@ impl Challenge {
             let greedy_total_value = self.evaluate_total_value(&greedy_solution)?;
             // TODO: implement SOTA baseline
             let sota_total_value = greedy_total_value;
-            // if total_value < greedy_total_value {
-            //     return Err(anyhow!(
-            //         "Total value {} is less than greedy baseline value {}",
-            //         total_value,
-            //         greedy_total_value
-            //     ));
-            // }
-            // let sota_solution = self.compute_sota_baseline()?;
-            // let sota_total_value = self.evaluate_total_value(&sota_solution)?;
+            if sota_total_value == 0 {
+                return Ok(0);
+            }
             let quality = (total_value as f64 - sota_total_value as f64) / sota_total_value as f64;
             let quality = quality.clamp(-10.0, 10.0) * QUALITY_PRECISION as f64;
             let quality = quality.round() as i32;
