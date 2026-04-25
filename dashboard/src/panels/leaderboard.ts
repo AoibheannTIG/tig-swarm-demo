@@ -4,8 +4,8 @@ import { getAgentColor } from "../lib/colors";
 type SortKey = "best_score" | "runs" | "improvements" | "runs_since_improvement";
 type SortDir = "asc" | "desc";
 
-// Default direction when a column is first clicked: higher-is-better for score
-// and activity counts, lower-is-better for stagnation.
+// Default sort when a column is first clicked: descending for score (higher
+// is better), runs, and improvements; ascending for stagnation (lower is better).
 const DEFAULT_DIR: Record<SortKey, SortDir> = {
   best_score: "desc",
   runs: "desc",

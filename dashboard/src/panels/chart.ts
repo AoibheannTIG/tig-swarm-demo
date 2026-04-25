@@ -1,5 +1,6 @@
 import * as d3 from "d3";
 import { getAgentColor } from "../lib/colors";
+import { isBetter } from "../lib/swarmConfig";
 import type { Panel, WSMessage } from "../types";
 
 interface DataPoint {
@@ -118,9 +119,9 @@ export class ChartPanel implements Panel {
     const first = new Date(entries[0].created_at).getTime();
     this.globalStartTime = first;
     const filtered: DataPoint[] = [];
-    let runningBest = Infinity;
+    let runningBest: number | null = null;
     for (const e of entries) {
-      if (e.score >= runningBest) continue;
+      if (runningBest !== null && !isBetter(e.score, runningBest)) continue;
       runningBest = e.score;
       filtered.push({
         time: Math.max(0, new Date(e.created_at).getTime() - first),
@@ -242,7 +243,7 @@ export class ChartPanel implements Panel {
       tryAppend();
     } else {
       const currentBest = this.globalData[this.globalData.length - 1].score;
-      if (msg.score < currentBest) tryAppend();
+      if (isBetter(msg.score, currentBest)) tryAppend();
     }
   }
 
@@ -380,7 +381,7 @@ export class ChartPanel implements Panel {
     const yDomain = this.getGlobalYDomain();
     if (!yDomain) return;
 
-    const yScale = d3.scaleLog()
+    const yScale = d3.scaleLinear()
       .domain(yDomain)
       .range([h, 0]);
 
@@ -525,8 +526,9 @@ export class ChartPanel implements Panel {
     const globalYDomain = this.getGlobalYDomain();
     const minScore = d3.min(exps, (d) => d.score)!;
     const maxScore = d3.max(exps, (d) => d.score)!;
-    const fallbackMin = Math.max(1, minScore * 0.95);
-    const fallbackMax = Math.max(fallbackMin * 1.01, maxScore * 1.05);
+    const fallbackPad = Math.max(Math.abs(maxScore - minScore) * 0.15, 1);
+    const fallbackMin = minScore - fallbackPad;
+    const fallbackMax = maxScore + fallbackPad;
     const yScale = d3.scaleLog()
       .domain(globalYDomain ?? [fallbackMin, fallbackMax])
       .range([h, 0]);
@@ -604,11 +606,12 @@ export class ChartPanel implements Panel {
   private getGlobalYDomain(): [number, number] | null {
     if (this.globalData.length < 1) return null;
     const scoreMin = d3.min(this.globalData, (d) => d.score);
-    const seedScore = this.globalData[0]?.score;
-    if (scoreMin == null || seedScore == null) return null;
+    const scoreMax = d3.max(this.globalData, (d) => d.score);
+    if (scoreMin == null || scoreMax == null) return null;
 
-    const yMin = 6500;
-    const yMax = Math.max(yMin * 1.01, seedScore + 100) + 200;
+    const pad = Math.max(Math.abs(scoreMax - scoreMin) * 0.15, 1);
+    const yMin = Math.max(1, scoreMin - pad);
+    const yMax = scoreMax + pad;
     return [yMin, yMax];
   }
 }

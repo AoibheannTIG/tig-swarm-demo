@@ -162,8 +162,13 @@ async def init_db() -> None:
         #    an empty agent_bests, collapse to cold start, and serve every
         #    agent the challenge seed until someone republishes. ON CONFLICT
         #    DO NOTHING makes this a no-op on subsequent boots.
+        cursor = await db.execute(
+            "SELECT value FROM config WHERE key = 'scoring_direction'"
+        )
+        row = await cursor.fetchone()
+        backfill_order = "DESC" if (row and row[0] == "max") else "ASC"
         await db.execute(
-            """INSERT INTO agent_bests
+            f"""INSERT INTO agent_bests
                (agent_id, experiment_id, algorithm_code, score, feasible,
                 num_vehicles, total_distance, route_data, updated_at)
                SELECT agent_id, id, algorithm_code, score, 1,
@@ -172,7 +177,7 @@ async def init_db() -> None:
                    SELECT e.*,
                           ROW_NUMBER() OVER (
                               PARTITION BY e.agent_id
-                              ORDER BY e.score ASC, e.created_at ASC
+                              ORDER BY e.score {backfill_order}, e.created_at ASC
                           ) AS rn
                    FROM experiments e
                    WHERE e.feasible = 1
