@@ -9,7 +9,7 @@ fn cli() -> Command {
     Command::new("tig-challenges-evaluator")
         .about("TIG challenge evaluation")
         .arg(
-            arg!(<CHALLENGE> "Challenge name: vehicle_routing")
+            arg!(<CHALLENGE> "Challenge name (satisfiability, vehicle_routing, knapsack, job_scheduling, energy_arbitrage)")
                 .value_parser(value_parser!(String)),
         )
         .arg(arg!(<INSTANCE_FILE> "Path to the instance file").value_parser(value_parser!(PathBuf)))

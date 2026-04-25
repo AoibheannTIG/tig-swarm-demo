@@ -108,16 +108,15 @@ pub fn solve_challenge(
 ) -> Result<()>
 ```
 
-Key types:
-- `Challenge`: has `num_nodes`, `node_positions: Vec<(i32, i32)>`, `distance_matrix: Vec<Vec<i32>>`, `max_capacity: i32`, `fleet_size: usize`, `demands: Vec<i32>`, `ready_times: Vec<i32>`, `due_times: Vec<i32>`, `service_time: i32`
-- `Solution`: has `routes: Vec<Vec<usize>>` where each route is a sequence of node indices starting and ending with depot (0)
-- **Call `save_solution(&solution)` every time you find an improved solution** — not just at the end. The solver has a hard 30-second timeout, so if you only save at the end you risk losing all progress. Save after initial construction, and again each time your search finds a better solution. **Only the most recent `save_solution` call is kept** — the framework overwrites on every call, so never save a worse or infeasible intermediate state after a better one, or you will clobber your own progress. Track your best in-memory and only call `save_solution` when you actually improve.
+See `CHALLENGE.md` for the active challenge's `Challenge` and `Solution` struct fields.
+
+**Call `save_solution(&solution)` every time you find an improved solution** — not just at the end. The solver has a hard timeout, so if you only save at the end you risk losing all progress. Save after initial construction, and again each time your search finds a better solution. **Only the most recent `save_solution` call is kept** — the framework overwrites on every call, so never save a worse or infeasible intermediate state after a better one, or you will clobber your own progress. Track your best in-memory and only call `save_solution` when you actually improve.
 
 ### Step 4: Run Benchmark
 
 ```bash
 BENCH=$(python3 scripts/benchmark.py 2>/dev/null)
-echo "$BENCH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Score: {d[\"score\"]}, Feasible: {d[\"feasible\"]}, Vehicles: {d[\"num_vehicles\"]}')"
+echo "$BENCH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Score: {d[\"score\"]}, Feasible: {d[\"feasible\"]}')"
 ```
 
 This builds, generates the per-track instances on first run (cached under `datasets/<challenge>/generated/`), runs the solver on every instance from every track defined in the swarm's `swarm_config.tracks`, evaluates each, and outputs JSON. The instance count and per-instance timeout are whatever the swarm owner configured — check `swarm.config.json` if you need the exact numbers. **Save the output in `$BENCH`** — you will reuse it in Step 5.

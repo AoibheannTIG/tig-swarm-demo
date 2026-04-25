@@ -299,7 +299,7 @@ async def get_state(agent_id: str | None = None):
     """Return current swarm state.
 
     When `agent_id` is supplied, the agent receives its own current best
-    code (or the Solomon seed on first run) plus its own hypothesis
+    code (or the challenge seed on first run) plus its own hypothesis
     history.  When stagnating (runs_since_improvement >= N_STAGNATION),
     an inspiration_code field is included with a random peer's best code.
 

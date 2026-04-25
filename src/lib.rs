@@ -9,7 +9,6 @@ pub(crate) const QUALITY_PRECISION: i32 = 1_000_000;
 // fns on the `hide_verification` feature so contest binaries can hide them.
 // The swarm demo always needs the verification path (agents evaluate
 // locally), so this is unconditionally `pub`.
-#[allow(unused_macros)]
 macro_rules! conditional_pub {
     (fn $name:ident $($rest:tt)*) => {
         pub fn $name $($rest)*

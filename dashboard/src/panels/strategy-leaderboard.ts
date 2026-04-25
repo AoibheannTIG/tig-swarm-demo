@@ -80,7 +80,7 @@ export class StrategyLeaderboardPanel implements Panel {
     if (this.entries.has(msg.experiment_id)) return; // already recorded
 
     const worst = this.worstScore();
-    if (this.entries.size >= MAX_ROWS && msg.score >= worst) return;
+    if (this.entries.size >= MAX_ROWS && msg.score <= worst) return;
 
     this.entries.set(msg.experiment_id, {
       experiment_id: msg.experiment_id,
@@ -112,16 +112,16 @@ export class StrategyLeaderboardPanel implements Panel {
   }
 
   private worstScore(): number {
-    let worst = -Infinity;
+    let worst = Infinity;
     for (const e of this.entries.values()) {
-      if (e.score > worst) worst = e.score;
+      if (e.score < worst) worst = e.score;
     }
     return worst;
   }
 
   private trim() {
     if (this.entries.size <= MAX_ROWS) return;
-    const sorted = [...this.entries.values()].sort((a, b) => a.score - b.score);
+    const sorted = [...this.entries.values()].sort((a, b) => b.score - a.score);
     this.entries.clear();
     for (const e of sorted.slice(0, MAX_ROWS)) {
       this.entries.set(e.experiment_id, e);
@@ -129,7 +129,7 @@ export class StrategyLeaderboardPanel implements Panel {
   }
 
   private render() {
-    const sorted = [...this.entries.values()].sort((a, b) => a.score - b.score);
+    const sorted = [...this.entries.values()].sort((a, b) => b.score - a.score);
 
     if (sorted.length === 0) {
       this.listEl.innerHTML = `

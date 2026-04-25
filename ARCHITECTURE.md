@@ -1,10 +1,10 @@
 # Architecture: Collaborative AI Swarm Optimization
 
-This document explains how the swarm optimization demo works at a high level — how multiple Claude Code agents collaborate to evolve a Vehicle Routing solver and how the coordination server orchestrates their work.
+This document explains how the swarm optimization demo works at a high level — how multiple Claude Code agents collaborate to evolve a solver for one of five TIG CPU challenges, and how the coordination server orchestrates their work.
 
 ## The Big Picture
 
-A group of autonomous Claude Code agents each try to improve a Rust solver for the Vehicle Routing Problem with Time Windows (VRPTW). They share a coordination server that tracks what's been tried, what worked, and what failed. A live dashboard projects the swarm's progress in real-time.
+A group of autonomous Claude Code agents each try to improve a Rust solver for the active challenge (chosen at setup time). They share a coordination server that tracks what's been tried, what worked, and what failed. A live dashboard projects the swarm's progress in real-time.
 
 ```
  ┌──────────┐  ┌──────────┐  ┌──────────┐
@@ -26,15 +26,31 @@ A group of autonomous Claude Code agents each try to improve a Rust solver for t
               └─────────────┘
 ```
 
-## The Problem Being Solved
+## Per-Deploy Isolation
 
-The VRPTW asks: given a depot, a fleet of capacity-limited vehicles, and customers with locations, demands, and time windows — find routes that visit every customer on time, within capacity, using minimal total travel distance. The benchmark suite has 24 instances with 400 customers each drawn from the Solomon/Homberger dataset (clustered, random, and mixed layouts).
+Every clone of this repo runs its own independent server with its own SQLite database. There is no central multi-tenant server. A swarm owner runs `python setup.py start` (or `init`) to pick a challenge, configure instance counts and timeouts, and launch the server. Contributors join by running `python setup.py join <URL>` with the owner's server URL.
 
-Scoring is simple: sum the travel distances of all feasible instances, add a 1,000,000 penalty per infeasible instance, then divide by the number of instances to get a per-instance average. Lower is better. This means agents must prioritize feasibility first, then optimize distance.
+The `config` table in SQLite stores swarm-wide settings: `challenge`, `tracks` (instance counts per track), `timeout`, `scoring_direction`, `swarm_name`, and `owner_name`. These are set by the wizard and read by every agent via `GET /api/swarm_config`.
+
+## Supported Challenges
+
+The swarm supports five TIG CPU challenges, selectable at setup time:
+
+| Challenge | Scoring | Description |
+|-----------|---------|-------------|
+| `vehicle_routing` | Higher is better | VRPTW: minimize total distance for a fleet serving customers with time windows |
+| `knapsack` | Higher is better | Quadratic knapsack: maximize value of selected items subject to weight budget |
+| `satisfiability` | Higher is better | MAX-SAT: maximize satisfied clauses in a CNF formula |
+| `job_scheduling` | Higher is better | Minimize makespan across machines for a set of jobs |
+| `energy_arbitrage` | Higher is better | Maximize profit from battery charge/discharge against energy prices |
+
+All challenges use baseline-relative quality scoring: `(baseline − you) / baseline × QUALITY_PRECISION` for minimize-direction challenges, `(you − baseline) / baseline × QUALITY_PRECISION` for maximize-direction. The result is always higher-is-better. Per-track scores are arithmetic means; the overall score is a shifted geometric mean across tracks.
+
+Challenge-specific details (types, tips, strategy tags) live in `CHALLENGE.md`, written by the setup wizard.
 
 ## How Agents Work
 
-Each agent is an instance of Claude Code that clones this repo, reads `CLAUDE.md` (its instructions), and enters an autonomous optimization loop:
+Each agent is an instance of Claude Code that clones this repo, reads `CLAUDE.md` (its instructions) and `CHALLENGE.md` (challenge-specific details), and enters an autonomous optimization loop:
 
 ### 1. Register
 
@@ -42,7 +58,7 @@ The agent registers with the server and receives a unique ID and a randomly gene
 
 ### 2. Check State
 
-The agent asks the server for the current state, passing its `agent_id`. The server returns the agent's **own current best** algorithm code (or the Solomon seed on first run), so each agent advances its own lineage. If the agent is stagnating (`runs_since_improvement >= 2`), the response may also include `inspiration_code` from a random active peer to study.
+The agent asks the server for the current state, passing its `agent_id`. The server returns the agent's **own current best** algorithm code (or the challenge seed from `server/seeds/<challenge>.rs` on first run), so each agent advances its own lineage. If the agent is stagnating (`runs_since_improvement >= 2`), the response may also include `inspiration_code` from a random active peer to study.
 
 #### How inspiration is picked
 
@@ -57,7 +73,7 @@ Inspiration is the only channel for cross-pollination between lineages, so the s
 The state includes:
 
 - **Best algorithm code** — the Rust source code of the agent's own current best branch.
-- **Best score** — the current global best score (lowest across all agents).
+- **Best score** — the current global best score across all agents.
 - **Personal counters** — own best score, runs completed, improvements, and runs since last improvement.
 - **Recent hypotheses (last 20)** — every idea the agent has already tried against its current best branch, regardless of outcome. No success/fail label is surfaced: the point is "here's what you've already explored from this starting point, so don't repeat it."
 - **Inspiration code** — optional code from a random active peer when stagnating.
@@ -67,15 +83,15 @@ The recent-hypotheses list is scoped to the agent's own current branch via `targ
 
 ### 3. Propose a Hypothesis
 
-The agent formulates a specific optimization idea (e.g., "Add or-opt local search to relocate single customers between routes") and submits it to the server with a strategy tag. Available strategy tags categorize the approach:
+The agent formulates a specific optimization idea and submits it to the server with a strategy tag. Available strategy tags categorize the approach:
 
 | Tag | Examples |
 |-----|----------|
 | `construction` | Nearest neighbor, savings algorithm, regret insertion |
 | `local_search` | 2-opt, or-opt, relocate, exchange |
 | `metaheuristic` | Simulated annealing, tabu search, genetic algorithm, ALNS |
-| `constraint_relaxation` | Relax time windows or capacity, then repair |
-| `decomposition` | Geographic clustering, route decomposition |
+| `constraint_relaxation` | Relax constraints then repair |
+| `decomposition` | Clustering, subproblem decomposition |
 | `hybrid` | Combinations of multiple strategies |
 | `data_structure` | Spatial indexing, caching, neighbor lists |
 
@@ -83,18 +99,20 @@ Hypotheses are tracked as **attempt outcomes** on an agent's current best branch
 
 ### 4. Implement
 
-The agent writes its own current best algorithm code to `src/vehicle_routing/algorithm/mod.rs` and modifies it to implement its hypothesis. This is the only file agents edit.
+The agent writes its own current best algorithm code to the active challenge's algorithm file (e.g. `src/knapsack/algorithm/mod.rs`) and modifies it to implement its hypothesis. This is the only file agents edit.
 
-Agents must call `save_solution()` incrementally as they find better solutions, because each instance has a 30-second hard timeout. If the solver only saves at the end, a timeout means zero credit.
+Agents must call `save_solution()` incrementally as they find better solutions, because each instance has a hard timeout. If the solver only saves at the end, a timeout means zero credit.
 
 ### 5. Benchmark
 
 The agent runs `scripts/benchmark.py`, which:
-1. Compiles the Rust solver
-2. Runs it against all 24 instances in parallel (30s timeout each)
-3. Evaluates feasibility (capacity, time windows, fleet size)
-4. Computes the aggregate score
-5. Outputs JSON with score, feasibility, and route geometry for visualization
+1. Reads swarm config to determine the active challenge, tracks, and timeout
+2. Generates test instances on first run (cached under `datasets/<challenge>/generated/`)
+3. Compiles the Rust solver with the appropriate feature flag (`--features solver,<challenge>`)
+4. Runs it against all instances in parallel (per-instance timeout from config)
+5. Evaluates feasibility using the challenge's verifier
+6. Computes the aggregate quality score
+7. Outputs JSON with score, feasibility, per-track breakdown, and optional visualization data
 
 ### 6. Publish Results
 
@@ -108,9 +126,11 @@ Agents post messages describing what they tried, what they learned, and where th
 
 The agent reads the updated state and starts the cycle again. Over many iterations, each lineage improves independently, while inspiration lets ideas cross-pollinate between active agents.
 
-## The Dashboard
+## Tacit Knowledge
 
-## Main Dashboard
+Each contributor can create a private `tacit_knowledge_personal.md` file (gitignored) containing strategy hints for their local agent. When stagnating, the agent reads this file for ideas. The file is never sent to the server or visible to other agents — cross-pollination happens only through the inspiration mechanism and the published hypothesis metadata.
+
+## The Dashboard
 
 The dashboard renders the swarm's progress in real-time:
 
@@ -118,13 +138,12 @@ The dashboard renders the swarm's progress in real-time:
 |-------|---------------|
 | **Stats** | Active agents, total experiments, hypotheses count, improvement % |
 | **Leaderboard** | Agent rankings by best score, with run count and breakthrough count |
-| **Routes** | SVG visualization of the best solution's vehicle routes, cycling through instances |
+| **Visualization** | Challenge-specific rendering of the best solution (e.g. route map for VRP) |
 | **Chart** | Step chart of the global best score over time (only plots breakthroughs) |
 | **Feed** | Chronological event stream — registrations, proposals, results |
 
-
 There are two pages:
-- **Main dashboard** — routes, leaderboard, chart, stats
+- **Main dashboard** — visualization, leaderboard, chart, stats
 - **Ideas page** — research feed
 
 ### The Ideas Page
@@ -132,3 +151,31 @@ There are two pages:
 The Ideas page is a **spectator view designed for the human audience**, not for agents. It has two columns:
 
 - **Research Feed** — a chronological stream of activity. Two kinds of posts appear here: agent chat messages (e.g., "Trying cluster decomposition, building on swift-hydra's construction") and auto-generated milestone markers when a new global best is published. Hypothesis proposals also appear inline.
+
+## Build System
+
+Challenges are feature-gated in `Cargo.toml`. The workspace produces three binaries:
+
+| Binary | Purpose |
+|--------|---------|
+| `tig_solver` | Runs `solve_challenge()` on a single instance, outputs JSON solution |
+| `tig_evaluator` | Verifies and scores a solution against its instance |
+| `tig_generator` | Generates challenge instances from a seed and track specification |
+
+Each binary dispatches to the active challenge via `#[cfg(feature = "<challenge>")]` arms. The benchmark script reads the challenge name from `swarm_config` and passes the corresponding `--features` flag to `cargo build`.
+
+## Key Files
+
+| File | Role |
+|------|------|
+| `setup.py` | Owner/contributor wizard — picks challenge, configures tracks, templates URLs |
+| `CLAUDE.md` | Agent instructions — the optimization loop, rules, API usage |
+| `CHALLENGE.md` | Per-challenge details — types, scoring, tips (written by wizard) |
+| `server/server.py` | Coordination server — FastAPI, WebSocket, all agent APIs |
+| `server/db.py` | SQLite schema, migrations, direction-aware queries |
+| `server/seeds/<challenge>.rs` | Per-challenge seed algorithms for new agents |
+| `src/<challenge>/algorithm/mod.rs` | The single file agents edit |
+| `src/<challenge>/mod.rs` | Challenge module — types, generator, evaluator |
+| `scripts/benchmark.py` | Build + run + evaluate + score |
+| `scripts/publish.py` | Post results to server |
+| `dashboard/` | Vite + TypeScript + D3 dashboard |

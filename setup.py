@@ -16,15 +16,12 @@ Two modes:
 Re-running either mode is safe — it overwrites the same set of files.
 
 Files this script reads / writes:
-  - CLAUDE.md, README.md, scripts/publish.py, scripts/bootstrap_seed.py
+  - CLAUDE.md, README.md, scripts/publish.py
     (templated: ${SERVER_URL} -> the chosen URL)
   - swarm.config.json (owner-only mirror of what's stored on the server)
-  - tacit_knowledge_personal.md (contributor-only, gitignored)
+  - CHALLENGE.md (per-challenge docs, from challenge_templates/)
+  - tacit_knowledge_personal.md (per-contributor, gitignored)
   - datasets/<challenge>/test.json (rewritten with chosen track counts)
-
-Other phases extend this:
-  - Phase 3 templates per-challenge content into CLAUDE.md.
-  - Phase 6 wires the test.json overwrite to actual instance generation.
 """
 
 from __future__ import annotations

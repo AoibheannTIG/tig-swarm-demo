@@ -160,7 +160,7 @@ async def init_db() -> None:
         # 4) Backfill agent_bests from the existing experiments table on
         #    first upgrade. Without this, an existing deployment would see
         #    an empty agent_bests, collapse to cold start, and serve every
-        #    agent the Solomon seed until someone republishes. ON CONFLICT
+        #    agent the challenge seed until someone republishes. ON CONFLICT
         #    DO NOTHING makes this a no-op on subsequent boots.
         await db.execute(
             """INSERT INTO agent_bests

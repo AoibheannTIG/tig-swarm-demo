@@ -4,20 +4,20 @@ import { getAgentColor } from "../lib/colors";
 type SortKey = "best_score" | "runs" | "improvements" | "runs_since_improvement";
 type SortDir = "asc" | "desc";
 
-// Default direction when a column is first clicked: lower-is-better for score,
-// higher-is-better for activity counts.
+// Default direction when a column is first clicked: higher-is-better for score
+// and activity counts, lower-is-better for stagnation.
 const DEFAULT_DIR: Record<SortKey, SortDir> = {
-  best_score: "asc",
+  best_score: "desc",
   runs: "desc",
   improvements: "desc",
-  runs_since_improvement: "desc",
+  runs_since_improvement: "asc",
 };
 
 export class LeaderboardPanel implements Panel {
   private list!: HTMLElement;
   private currentEntries: LeaderboardEntry[] = [];
   private sortKey: SortKey = "best_score";
-  private sortDir: SortDir = "asc";
+  private sortDir: SortDir = "desc";
 
   init(container: HTMLElement) {
     container.innerHTML = `
