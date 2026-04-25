@@ -1,7 +1,6 @@
 import * as d3 from "d3";
 import type { Panel, WSMessage, RouteData, AllRouteData, RoutePoint } from "../types";
 import { getAgentColor, getRouteColor } from "../lib/colors";
-import { BKS_AVERAGE, bksGapPct } from "../lib/bks";
 import { getSwarmConfig } from "../lib/swarmConfig";
 
 // Drawing sizes as fractions of the viewBox side length. Everything else in
@@ -58,7 +57,6 @@ export class RoutesPanel implements Panel {
   private depotGroup!: any;
   private scoreEl!: HTMLElement;
   private scoreDeltaEl!: HTMLElement;
-  private scoreBksEl!: HTMLElement;
   private routeDistanceEl!: HTMLElement;
   private instanceLabelEl!: HTMLElement;
   private navEl!: HTMLElement;
@@ -143,14 +141,12 @@ export class RoutesPanel implements Panel {
           <div class="routes-score-label">SCORE</div>
           <div class="routes-score-value" id="routes-score">---</div>
           <div class="routes-score-delta" id="routes-score-delta"></div>
-          <div class="routes-score-bks" id="routes-score-bks" title="Gap vs average literature Best Known Solution across the 24 HG_400 instances (avg ${BKS_AVERAGE.toFixed(2)})"></div>
         </div>
       </div>
     `;
 
     this.scoreEl = document.getElementById("routes-score")!;
     this.scoreDeltaEl = document.getElementById("routes-score-delta")!;
-    this.scoreBksEl = document.getElementById("routes-score-bks")!;
     this.routeDistanceEl = document.getElementById("routes-route-distance")!;
     this.instanceLabelEl = document.getElementById("routes-instance-label")!;
     this.navEl = document.getElementById("routes-nav")!;
@@ -290,7 +286,6 @@ export class RoutesPanel implements Panel {
     }
 
     this.scoreEl.textContent = entry.score.toFixed(1);
-    this.updateBksGap(entry.score);
 
     // Score delta = improvement this entry represented over the previous
     // historical best. Shown as a negative score change ("-X.XXXXX%") in
@@ -399,8 +394,6 @@ export class RoutesPanel implements Panel {
       this.svg.attr("viewBox", "0 0 1000 1000");
       this.scoreEl.textContent = "---";
       this.scoreDeltaEl.textContent = "";
-      this.scoreBksEl.textContent = "";
-      this.scoreBksEl.style.color = "";
       this.routeDistanceEl.textContent = "---";
       this.navEl.style.display = "none";
       this.historyNavEl.style.display = "none";
@@ -418,7 +411,6 @@ export class RoutesPanel implements Panel {
       if (msg.best_score != null && !this.currentRouteData) {
         this.rawScore = msg.best_score;
         this.scoreEl.textContent = msg.best_score.toFixed(1);
-        this.updateBksGap(msg.best_score);
       }
     }
 
@@ -460,17 +452,6 @@ export class RoutesPanel implements Panel {
         }
       }
     }
-  }
-
-  // Displayed score is an average across instances; compare directly to the
-  // literature BKS average. Red when above (gap), green when below (would beat
-  // the published optima — shouldn't happen since BKS=optimum, but handled for
-  // completeness), dim at parity.
-  private updateBksGap(score: number) {
-    const pct = bksGapPct(score);
-    const sign = pct >= 0 ? "+" : "";
-    this.scoreBksEl.textContent = `${sign}${pct.toFixed(2)}% vs BKS (${BKS_AVERAGE.toFixed(1)})`;
-    this.scoreBksEl.style.color = pct > 0.05 ? "var(--red)" : pct < -0.05 ? "var(--green)" : "var(--text-dim)";
   }
 
   // Immediate, non-animated draw of one instance's route data.

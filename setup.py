@@ -484,19 +484,216 @@ def run_join(server_url: str) -> int:
     return 0
 
 
+# ── Auto-detect public URL ──────────────────────────────────────────
+
+
+def detect_public_url(port: int) -> str:
+    """Try to find a publicly reachable URL for this machine."""
+    import socket
+    import subprocess as sp
+
+    # Try to get the default-route IP (works on most Linux)
+    try:
+        result = sp.run(
+            ["hostname", "-I"], capture_output=True, text=True, timeout=3
+        )
+        if result.returncode == 0:
+            first_ip = result.stdout.strip().split()[0]
+            # Check if it's a public IP (not 10.x, 172.16-31.x, 192.168.x)
+            parts = first_ip.split(".")
+            if parts[0] not in ("10", "127") and not (
+                parts[0] == "172" and 16 <= int(parts[1]) <= 31
+            ) and not (parts[0] == "192" and parts[1] == "168"):
+                return f"http://{first_ip}:{port}"
+    except Exception:
+        pass
+
+    # Fallback: try external service
+    try:
+        with urllib.request.urlopen("https://ifconfig.me", timeout=3) as r:
+            ip = r.read().decode().strip()
+            return f"http://{ip}:{port}"
+    except Exception:
+        pass
+
+    return f"http://localhost:{port}"
+
+
+# ── Start (automated owner setup) ──────────────────────────────────
+
+
+def run_start() -> int:
+    """Automated owner setup: prompts only for challenge, instances per
+    track, and timeout. Auto-detects public URL, starts the server, and
+    prints a shareable join link."""
+    import subprocess as sp
+
+    port = 8080
+    print("TIG Swarm — automated setup")
+    print("=" * 48)
+
+    challenge = prompt_choice(
+        "Which TIG challenge will this swarm optimize?",
+        list(CHALLENGES.keys()),
+        default="vehicle_routing",
+    )
+    challenge_meta = CHALLENGES[challenge]
+    print(f"  -> {challenge}")
+
+    print(
+        f"\n{challenge} has 5 tracks. For each, choose how many instances to\n"
+        f"benchmark per iteration. Default is {DEFAULT_INSTANCES_PER_TRACK}."
+    )
+    tracks: dict = {"seed": "test"}
+    for key in challenge_meta["track_keys"]:
+        tracks[key] = prompt_int(f"  instances for {key}", DEFAULT_INSTANCES_PER_TRACK, minimum=0)
+
+    timeout = prompt_int("\nPer-instance solver timeout (seconds)", DEFAULT_TIMEOUT, minimum=1)
+
+    # Tacit knowledge
+    print(
+        "\n── Tacit knowledge (optional) ──\n"
+        "Give your local Claude agent private strategy hints.\n"
+        "These are read when stagnating (2+ iterations without improvement).\n"
+    )
+    tk_path = init_personal_tacit_knowledge()
+    hints: list[str] = []
+    while True:
+        hint = input("Add a hint (or press Enter to skip): ").strip()
+        if not hint:
+            break
+        hints.append(hint)
+    if hints:
+        lines = [
+            "# Personal tacit knowledge\n",
+            "Hints only **your local Claude agent** sees. Never sent to the server.\n",
+            "Read by your agent when stagnating (`my_runs_since_improvement >= 2`).\n",
+            "\n## When stuck, try…\n",
+        ]
+        for h in hints:
+            lines.append(f"- {h}\n")
+        tk_path.write_text("\n".join(lines))
+        print(f"  wrote {len(hints)} hint(s) to {tk_path.relative_to(ROOT)}")
+
+    # Ensure data directory exists
+    data_dir = ROOT / "server" / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    # Start the server
+    print("\nStarting server…")
+    env = os.environ.copy()
+    env["DATA_DIR"] = str(data_dir)
+    server_proc = sp.Popen(
+        [sys.executable, "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", str(port)],
+        cwd=str(ROOT / "server"),
+        env=env,
+        stdout=sp.DEVNULL,
+        stderr=sp.DEVNULL,
+    )
+
+    # Wait for server to be ready
+    import time
+    for _ in range(20):
+        time.sleep(0.5)
+        try:
+            with urllib.request.urlopen(f"http://localhost:{port}/api/swarm_config", timeout=2):
+                break
+        except Exception:
+            continue
+    else:
+        print("  error: server did not start within 10 seconds")
+        server_proc.kill()
+        return 1
+
+    print(f"  server running (PID {server_proc.pid})")
+
+    # Detect public URL
+    server_url = detect_public_url(port)
+    print(f"  detected URL: {server_url}")
+
+    # Verify reachability
+    try:
+        with urllib.request.urlopen(f"{server_url}/api/swarm_config", timeout=3):
+            pass
+        print(f"  confirmed reachable")
+    except Exception:
+        print(f"  warning: {server_url} may not be reachable externally")
+        print(f"  falling back to localhost — share via tunnel if needed")
+        server_url = f"http://localhost:{port}"
+
+    admin_key = "ads-2026"
+    cfg = {
+        "swarm_name": f"{challenge}-swarm",
+        "owner_name": os.environ.get("USER", "owner"),
+        "server_url": server_url,
+        "admin_key": admin_key,
+        "challenge": challenge,
+        "tracks": tracks,
+        "timeout": timeout,
+        "scoring_direction": challenge_meta["scoring_direction"],
+        "algorithm_path": f"src/{challenge}/algorithm/mod.rs",
+    }
+
+    print("\nWriting config…")
+    prior = read_prior_swarm_config()
+    template_files(
+        server_url,
+        challenge=challenge,
+        algorithm_path=cfg["algorithm_path"],
+        prior=prior,
+    )
+    write_challenge_md(challenge)
+    write_swarm_config(cfg)
+    test_json_dir = ROOT / "datasets" / challenge
+    test_json_dir.mkdir(parents=True, exist_ok=True)
+    (test_json_dir / "test.json").write_text(json.dumps(tracks, indent=2) + "\n")
+
+    print("Pushing config to server…")
+    push_config_to_server(server_url, admin_key, cfg)
+
+    # Detect the git remote URL so the join instructions are correct for forks
+    repo_url = "<this-repo-url>"
+    try:
+        result = sp.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=3, cwd=str(ROOT),
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            repo_url = result.stdout.strip()
+    except Exception:
+        pass
+
+    print("\n" + "=" * 48)
+    print("SWARM IS LIVE")
+    print("=" * 48)
+    print(f"\n  Dashboard:  {server_url}/")
+    print(f"  Challenge:  {challenge}")
+    print(f"\n  Share this with your friends to join:\n")
+    print(f"    git clone {repo_url}")
+    print(f"    cd {Path(repo_url).stem.replace('.git', '') if repo_url != '<this-repo-url>' else 'tig-swarm-demo'}")
+    print(f"    python setup.py join {server_url}")
+    print(f"\n  Then tell Claude: 'Read CLAUDE.md and start contributing to the swarm.'")
+    print(f"\n  Server PID: {server_proc.pid} (kill with: kill {server_proc.pid})")
+    print()
+    return 0
+
+
 # ── Entrypoint ──────────────────────────────────────────────────────
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="setup.py")
     sub = parser.add_subparsers(dest="mode", required=True)
-    sub.add_parser("init", help="Owner: configure a new swarm.")
+    sub.add_parser("init", help="Owner: configure a new swarm (manual server setup).")
+    sub.add_parser("start", help="Owner: configure + auto-start server + print join link.")
     join = sub.add_parser("join", help="Contributor: point this clone at a swarm URL.")
     join.add_argument("server_url", help="The swarm owner's server URL.")
     args = parser.parse_args()
 
     if args.mode == "init":
         return run_init()
+    if args.mode == "start":
+        return run_start()
     if args.mode == "join":
         return run_join(args.server_url)
     parser.print_help()

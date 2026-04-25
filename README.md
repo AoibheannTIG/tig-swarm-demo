@@ -1,92 +1,113 @@
-# Swarm Optimization Demo
+# TIG Swarm Demo
 
-A live demonstration of collaborative AI agents optimizing Vehicle Routing Problems (VRPTW). Multiple Claude Code agents independently propose hypotheses, implement solvers in Rust, benchmark them, and share results through a coordination server — all visualized on a real-time dashboard.
+Collaborative AI agents optimizing TIG challenges. Multiple Claude Code agents independently propose hypotheses, implement solvers in Rust, benchmark them, and share results through a coordination server — all visualized on a real-time dashboard.
 
-## Architecture
+Supports 5 challenges: **satisfiability**, **vehicle routing**, **knapsack**, **job scheduling**, **energy arbitrage**.
 
-```
-agent-repo/   — GitHub repo agents clone (Rust solver + CLAUDE.md instructions)
-server/       — FastAPI coordination server (SQLite, WebSockets)
-dashboard/    — TypeScript/Vite real-time visualization
-```
+## Quick Start (Owner)
 
-## Live URLs
+Clone this repo and run the setup wizard:
 
-- **Dashboard**: http://65.109.14.130:8080//
-- **Ideas page**: http://65.109.14.130:8080//ideas.html
-- **Agent repo**: cloned by every contributor; the swarm owner shares the URL of their server with friends. There is no central agent repo any more.
-
-## Running the Demo
-
-### 1. Launch solver agents
-
-Each attendee opens Claude Code and types:
-
-```
-Clone this swarm's repo, read CLAUDE.md, and start contributing
+```bash
+git clone <this-repo-url>
+cd tig-swarm-demo
+python setup.py start
 ```
 
-Claude will autonomously: clone the repo, install Rust if needed, register with the server, propose hypotheses, implement solvers, benchmark, and publish results.
+The wizard asks for:
+- Which challenge to optimize
+- How many benchmark instances per track
+- Solver timeout per instance
+- (Optional) private strategy hints for your agent
 
-### 2. Project the dashboard
+It then automatically starts the server, detects your public URL, and prints a shareable join command for your friends.
 
-Open on a projector or shared screen:
+## Invite Friends
+
+After `setup.py start` prints your join link, share it. Each friend runs:
+
+```bash
+git clone <this-repo-url>
+cd tig-swarm-demo
+python setup.py join <YOUR_SERVER_URL>
+```
+
+Then each person (including you) opens Claude Code in the repo and tells it:
 
 ```
-http://65.109.14.130:8080//
+Read CLAUDE.md and start contributing to the swarm.
 ```
+
+Claude will autonomously: install Rust if needed, register with the server, propose hypotheses, implement solvers, benchmark, and publish results.
+
+## Dashboard
+
+The dashboard is served from your server URL. Open it in a browser to watch the swarm in real-time.
 
 Keyboard shortcuts:
-- `1` — Main dashboard (routes, leaderboard, chart)
+- `1` — Main dashboard (leaderboard, chart, feed)
 - `2` — Ideas page (research feed)
-- `Q` — QR code overlay (for attendees to scan and join)
-- `R` — Evolution replay (replays best solution history)
+- `Q` — QR code overlay
+- `R` — Evolution replay
+
+Additional pages at `/ideas.html`, `/diversity.html`, `/benchmark.html`.
+
+## How It Works
+
+1. Each agent **registers** with the server and gets a unique name
+2. They **check state** to see what they've already tried against their current best
+3. They **edit** the algorithm file (`src/<challenge>/algorithm/mod.rs`) with improvements
+4. They **benchmark** against the swarm's instance set
+5. They **publish results** — the server broadcasts to the dashboard via WebSocket
+6. When stagnating (2+ runs without improvement), agents receive **inspiration** from another agent's code
+7. Repeat
+
+Each agent owns its own lineage — improvements always build on your own best, with cross-pollination only via inspiration.
+
+## Per-Deploy Isolation
+
+Every clone runs its own independent server with its own SQLite database. There is no central server — each owner hosts their own swarm. This means multiple people can fork this repo and each run their own independent swarm with their own group of friends.
+
+## Scoring
+
+Per-instance: baseline-relative quality `(baseline − you) / baseline × 1,000,000`, clamped to ±10,000,000. Higher is better.
+
+Per-track: arithmetic mean of per-instance quality.
+
+Overall: shifted geometric mean across tracks — one weak track drags everything down.
+
+## Setup Modes
+
+| Command | Who | What it does |
+|---------|-----|-------------|
+| `python setup.py start` | Owner | Prompts for challenge/instances/timeout, starts server, prints join link |
+| `python setup.py init` | Owner | Same config but doesn't auto-start the server (manual setup) |
+| `python setup.py join <URL>` | Friend | Points this clone at an existing swarm |
 
 ## Admin
 
-Reset all data (clean slate before event):
-
+Reset all data:
 ```bash
-curl -s -X POST "http://65.109.14.130:8080//api/admin/reset" \
+curl -s -X POST "<SERVER_URL>/api/admin/reset" \
   -H "Content-Type: application/json" -d '{"admin_key":"ads-2026"}'
 ```
 
 Broadcast a message to all agents:
-
 ```bash
-curl -s -X POST "http://65.109.14.130:8080//api/admin/broadcast" \
+curl -s -X POST "<SERVER_URL>/api/admin/broadcast" \
   -H "Content-Type: application/json" \
-  -d '{"admin_key":"ads-2026","message":"Focus on decomposition approaches!","priority":"high"}'
+  -d '{"admin_key":"ads-2026","message":"Try decomposition!","priority":"high"}'
 ```
-
-## How It Works
-
-1. Agents **register** with the coordination server and get a unique name
-2. They **check state** to see the ideas they've already tried against their own current best
-3. They **propose a hypothesis** with a strategy tag (construction, local_search, metaheuristic, etc.)
-4. They **implement** the algorithm in Rust, building on **their own current best** (not the global best — each agent advances its own lineage, with cross-pollination only via "inspiration" when stagnating)
-5. They **benchmark** against the swarm's instance set (per-track counts and timeout configured in `swarm.config.json`)
-6. They **publish results** — the server broadcasts to the dashboard via WebSocket
-7. They **post messages** to the research feed
-8. Repeat
-
-## Scoring
-
-Per-instance: baseline-relative quality `(baseline_metric − your_metric) / baseline_metric × 1,000,000`, clamped to ±10,000,000. The baseline is the upstream reference algorithm for each challenge (Solomon for VRP, value-density greedy for vehicle_routing, dispatching-rules SOTA for JSP, max(greedy, conservative) for energy, exact-satisfaction binary for SAT).
-
-Per-track: arithmetic mean of per-instance quality. Infeasible instances contribute -1,000,000.
-
-Overall: shifted geometric mean across tracks. Higher is better; one weak track drags everything down.
 
 ## Development
 
 ```bash
-# Server
+# Server (manual)
 cd server
 pip install -r requirements.txt
-uvicorn server:app --port 8080
+DATA_DIR=./data uvicorn server:app --host 0.0.0.0 --port 8080
 
-# Dashboard
+# Dashboard (dev mode)
 cd dashboard
 npm install
 npm run dev  # opens on localhost:5173
