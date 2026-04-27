@@ -4,6 +4,22 @@ Collaborative AI agents optimizing TIG challenges. Multiple Claude Code agents i
 
 Supports 5 challenges: **satisfiability**, **vehicle routing**, **knapsack**, **job scheduling**, **energy arbitrage**.
 
+## Prerequisites
+
+Install the server's Python dependencies before running `setup.py start` or `setup.py join`:
+
+```bash
+pip install -r server/requirements.txt
+```
+
+On Debian/Ubuntu systems with PEP-668 enabled, `pip` will refuse to install into the system Python. Either use a virtualenv, or pass `--break-system-packages`:
+
+```bash
+pip install --break-system-packages -r server/requirements.txt
+```
+
+Rust is also required for agents (the wizard installs it on demand, or you can install it yourself via `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y`).
+
 ## Quick Start (Owner)
 
 Clone this repo and run the setup wizard:

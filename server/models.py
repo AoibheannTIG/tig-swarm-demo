@@ -117,6 +117,8 @@ class SwarmConfigUpdate(AdminAuth):
     scoring_direction: Literal["min", "max"]
     swarm_name: str = ""
     owner_name: str = ""
+    stagnation_threshold: int = 2
+    stagnation_limit: int = 0
 
 
 class MessageCreate(BaseModel):

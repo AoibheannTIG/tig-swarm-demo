@@ -226,6 +226,8 @@ def push_config_to_server(server_url: str, admin_key: str, cfg: dict) -> None:
         "scoring_direction": cfg["scoring_direction"],
         "swarm_name": cfg.get("swarm_name", ""),
         "owner_name": cfg.get("owner_name", ""),
+        "stagnation_threshold": cfg.get("stagnation_threshold", 2),
+        "stagnation_limit": cfg.get("stagnation_limit", 0),
     }
     req = urllib.request.Request(
         f"{server_url.rstrip('/')}/api/swarm_config",
@@ -317,6 +319,16 @@ def run_init() -> int:
 
     timeout = prompt_int("Per-instance solver timeout (seconds)", DEFAULT_TIMEOUT, minimum=1)
 
+    stagnation_threshold = prompt_int(
+        "Stagnation threshold (iterations without improvement before hints/inspiration)",
+        2, minimum=1,
+    )
+
+    stagnation_limit = prompt_int(
+        "Stagnation limit (iterations without improvement before trajectory reset, 0=disabled)",
+        0, minimum=0,
+    )
+
     print(
         "\nYour server URL is what agents POST to and what the dashboard\n"
         "lives at. Pick the form that matches how you're running it:\n"
@@ -339,6 +351,8 @@ def run_init() -> int:
         "challenge": challenge,
         "tracks": tracks,
         "timeout": timeout,
+        "stagnation_threshold": stagnation_threshold,
+        "stagnation_limit": stagnation_limit,
         "scoring_direction": challenge_meta["scoring_direction"],
     }
 
@@ -367,7 +381,9 @@ def run_init() -> int:
         "\n── Tacit knowledge (optional) ──\n"
         "You can give your local Claude agent private strategy hints that\n"
         "other agents in the swarm never see. These are read when the agent\n"
-        "stagnates (2+ iterations without improvement).\n"
+        f"stagnates ({stagnation_threshold}+ iterations without improvement).\n"
+        "When stagnating, the server randomly picks (50/50) between tacit\n"
+        "knowledge and swarm inspiration for each iteration.\n"
         "Examples: 'Try simulated annealing with cooling schedule',\n"
         "          'Focus on the interaction_values matrix structure'\n"
     )
@@ -382,7 +398,7 @@ def run_init() -> int:
         lines = [
             "# Personal tacit knowledge\n",
             "Hints only **your local Claude agent** sees. Never sent to the server.\n",
-            "Read by your agent when stagnating (`my_runs_since_improvement >= 2`).\n",
+            f"Read by your agent when stagnating (`my_runs_since_improvement >= {stagnation_threshold}`).\n",
             "\n## When stuck, try…\n",
         ]
         for h in hints:
@@ -415,10 +431,12 @@ def run_join(server_url: str) -> int:
     # challenge / algorithm path to template into the local files.
     challenge = None
     algorithm_path = None
+    stagnation_threshold = 2
     try:
         with urllib.request.urlopen(f"{server_url.rstrip('/')}/api/swarm_config", timeout=4) as r:
             swarm = json.load(r)
         challenge = swarm.get("challenge")
+        stagnation_threshold = swarm.get("stagnation_threshold", 2)
         if challenge:
             algorithm_path = f"src/{challenge}/algorithm/mod.rs"
     except Exception as e:
@@ -448,7 +466,9 @@ def run_join(server_url: str) -> int:
         "\n── Tacit knowledge (optional) ──\n"
         "You can give your local Claude agent private strategy hints that\n"
         "other agents in the swarm never see. These are read when the agent\n"
-        "stagnates (2+ iterations without improvement).\n"
+        f"stagnates ({stagnation_threshold}+ iterations without improvement).\n"
+        "When stagnating, the server randomly picks (50/50) between tacit\n"
+        "knowledge and swarm inspiration for each iteration.\n"
         "Examples: 'Try simulated annealing with cooling schedule',\n"
         "          'Focus on the interaction_values matrix structure'\n"
     )
@@ -463,7 +483,7 @@ def run_join(server_url: str) -> int:
         lines = [
             "# Personal tacit knowledge\n",
             "Hints only **your local Claude agent** sees. Never sent to the server.\n",
-            "Read by your agent when stagnating (`my_runs_since_improvement >= 2`).\n",
+            f"Read by your agent when stagnating (`my_runs_since_improvement >= {stagnation_threshold}`).\n",
             "\n## When stuck, try…\n",
         ]
         for h in hints:
@@ -547,11 +567,21 @@ def run_start() -> int:
 
     timeout = prompt_int("\nPer-instance solver timeout (seconds)", DEFAULT_TIMEOUT, minimum=1)
 
+    stagnation_threshold = prompt_int(
+        "Stagnation threshold (iterations without improvement before hints/inspiration)",
+        2, minimum=1,
+    )
+
+    stagnation_limit = prompt_int(
+        "Stagnation limit (iterations without improvement before trajectory reset, 0=disabled)",
+        0, minimum=0,
+    )
+
     # Tacit knowledge
     print(
         "\n── Tacit knowledge (optional) ──\n"
         "Give your local Claude agent private strategy hints.\n"
-        "These are read when stagnating (2+ iterations without improvement).\n"
+        f"These are read when stagnating ({stagnation_threshold}+ iterations without improvement).\n"
     )
     tk_path = init_personal_tacit_knowledge()
     hints: list[str] = []
@@ -564,7 +594,7 @@ def run_start() -> int:
         lines = [
             "# Personal tacit knowledge\n",
             "Hints only **your local Claude agent** sees. Never sent to the server.\n",
-            "Read by your agent when stagnating (`my_runs_since_improvement >= 2`).\n",
+            f"Read by your agent when stagnating (`my_runs_since_improvement >= {stagnation_threshold}`).\n",
             "\n## When stuck, try…\n",
         ]
         for h in hints:
@@ -627,6 +657,8 @@ def run_start() -> int:
         "challenge": challenge,
         "tracks": tracks,
         "timeout": timeout,
+        "stagnation_threshold": stagnation_threshold,
+        "stagnation_limit": stagnation_limit,
         "scoring_direction": challenge_meta["scoring_direction"],
         "algorithm_path": f"src/{challenge}/algorithm/mod.rs",
     }

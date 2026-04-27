@@ -275,7 +275,6 @@ async def heartbeat(agent_id: str, req: HeartbeatRequest):
 
 # ── State endpoint ──
 
-N_STAGNATION = 2
 INACTIVE_MINUTES = 20
 
 
@@ -300,8 +299,9 @@ async def get_state(agent_id: str | None = None):
 
     When `agent_id` is supplied, the agent receives its own current best
     code (or the challenge seed on first run) plus its own hypothesis
-    history.  When stagnating (runs_since_improvement >= N_STAGNATION),
-    an inspiration_code field is included with a random peer's best code.
+    history.  When stagnating (runs_since_improvement >= stagnation_threshold
+    from config), a stagnation_hint field (50/50 "tacit_knowledge" or
+    "inspiration") and inspiration_code are included.
 
     When `agent_id` is omitted, returns a global dashboard view.
     """
@@ -338,13 +338,65 @@ async def get_state(agent_id: str | None = None):
                 (agent_id,),
             )
             agent_row = await cursor.fetchone()
+            runs_since = agent_row["runs_since_improvement"] if agent_row else 0
 
-            my_best_code = (
-                my_best["algorithm_code"] if my_best
-                else load_seed_for(config.get("challenge", "vehicle_routing"))
-            )
-            my_best_score = my_best["score"] if my_best else None
-            my_best_experiment_id = my_best["experiment_id"] if my_best else None
+            # ── Trajectory reset on stagnation_limit ──
+            trajectory_reset = None
+            stagnation_limit = int(config.get("stagnation_limit", "0"))
+            if stagnation_limit > 0 and runs_since >= stagnation_limit and my_best is not None:
+                timestamp = now()
+                await db.deposit_inactive(
+                    conn, agent_id, my_best["algorithm_code"],
+                    my_best["score"], timestamp,
+                )
+                n_inactive = await db.count_inactive(conn)
+                # Uniform pick: 1/(n_inactive+1) for fresh, 1/(n_inactive+1) for each inactive
+                if random.randint(0, n_inactive) == 0:
+                    new_code = load_seed_for(config.get("challenge", "vehicle_routing"))
+                    trajectory_reset = {"type": "fresh_start"}
+                else:
+                    picked = await db.pick_random_inactive(conn)
+                    if picked:
+                        new_code = picked["algorithm_code"]
+                        await db.remove_inactive(conn, picked["id"])
+                        trajectory_reset = {
+                            "type": "adopted_inactive",
+                            "prior_score": picked["score"],
+                        }
+                    else:
+                        new_code = load_seed_for(config.get("challenge", "vehicle_routing"))
+                        trajectory_reset = {"type": "fresh_start"}
+                await db.clear_agent_best(conn, agent_id)
+                await conn.execute(
+                    "UPDATE agents SET runs_since_improvement = 0, "
+                    "best_score = NULL WHERE id = ?",
+                    (agent_id,),
+                )
+                await conn.execute(
+                    "DELETE FROM hypotheses WHERE agent_id = ?",
+                    (agent_id,),
+                )
+                await conn.commit()
+                my_best = None
+                my_best_code = new_code
+                my_best_score = None
+                my_best_experiment_id = None
+                runs_since = 0
+                agent_name = await get_agent_name(conn, agent_id)
+                await manager.broadcast({
+                    "type": "trajectory_reset",
+                    "agent_name": agent_name,
+                    "agent_id": agent_id,
+                    "reset_type": trajectory_reset["type"],
+                    "timestamp": timestamp,
+                })
+            else:
+                my_best_code = (
+                    my_best["algorithm_code"] if my_best
+                    else load_seed_for(config.get("challenge", "vehicle_routing"))
+                )
+                my_best_score = my_best["score"] if my_best else None
+                my_best_experiment_id = my_best["experiment_id"] if my_best else None
 
             # Hypotheses scoped to this agent's current best
             if my_best_experiment_id is not None:
@@ -354,10 +406,6 @@ async def get_state(agent_id: str | None = None):
                 hyp_clause = "AND h.agent_id = ? AND h.target_best_experiment_id IS NULL"
                 hyp_params = [agent_id]
 
-            # "recent_hypotheses" = every attempt the agent has made against
-            # its current best. No success/fail distinction surfaced to
-            # agents: the point is "here's what you've already tried against
-            # this code, so don't repeat it."
             cursor = await conn.execute(
                 f"""SELECT h.id, h.title, h.strategy_tag, h.description
                     FROM hypotheses h
@@ -367,11 +415,13 @@ async def get_state(agent_id: str | None = None):
             )
             recent_hypotheses = [dict(row) for row in await cursor.fetchall()]
 
-            # Inspiration on stagnation
+            # Inspiration on stagnation (only when not trajectory-resetting)
             inspiration_code = None
             inspiration_agent_name = None
-            runs_since = agent_row["runs_since_improvement"] if agent_row else 0
-            if runs_since >= N_STAGNATION:
+            stagnation_hint = None
+            n_stagnation = int(config.get("stagnation_threshold", "2"))
+            if trajectory_reset is None and runs_since >= n_stagnation:
+                stagnation_hint = random.choice(["tacit_knowledge", "inspiration"])
                 all_bests = await db.list_agent_bests(conn, direction=direction)
                 cutoff_ts = inactive_cutoff()
                 cursor = await conn.execute(
@@ -412,6 +462,8 @@ async def get_state(agent_id: str | None = None):
                 ],
                 "inspiration_code": inspiration_code,
                 "inspiration_agent_name": inspiration_agent_name,
+                "stagnation_hint": stagnation_hint,
+                "trajectory_reset": trajectory_reset,
                 "leaderboard": leaderboard,
             }
 
@@ -1179,6 +1231,14 @@ async def get_swarm_config():
         timeout = int(config.get("timeout", "30"))
     except Exception:
         timeout = 30
+    try:
+        stagnation_threshold = int(config.get("stagnation_threshold", "2"))
+    except Exception:
+        stagnation_threshold = 2
+    try:
+        stagnation_limit = int(config.get("stagnation_limit", "0"))
+    except Exception:
+        stagnation_limit = 0
     return {
         "challenge": config.get("challenge", "vehicle_routing"),
         "tracks": tracks,
@@ -1186,6 +1246,8 @@ async def get_swarm_config():
         "scoring_direction": config.get("scoring_direction", "min"),
         "swarm_name": config.get("swarm_name", ""),
         "owner_name": config.get("owner_name", ""),
+        "stagnation_threshold": stagnation_threshold,
+        "stagnation_limit": stagnation_limit,
     }
 
 
@@ -1204,6 +1266,8 @@ async def update_swarm_config(req: SwarmConfigUpdate):
         "scoring_direction": req.scoring_direction,
         "swarm_name": req.swarm_name,
         "owner_name": req.owner_name,
+        "stagnation_threshold": str(req.stagnation_threshold),
+        "stagnation_limit": str(req.stagnation_limit),
     }
     async with db.connect() as conn:
         for key, value in updates.items():

@@ -89,6 +89,15 @@ CREATE TABLE IF NOT EXISTS best_history (
     route_data TEXT,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS inactive_algorithms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    algorithm_code TEXT NOT NULL,
+    score REAL,
+    deposited_at TEXT NOT NULL,
+    FOREIGN KEY (agent_id) REFERENCES agents(id)
+);
 """
 
 # Indexes are split out from the main schema so they can be applied after
@@ -375,3 +384,46 @@ async def compute_leaderboard(
         }
         for i, row in enumerate(rows)
     ]
+
+
+async def deposit_inactive(
+    conn: aiosqlite.Connection,
+    agent_id: str,
+    algorithm_code: str,
+    score: float | None,
+    deposited_at: str,
+) -> int:
+    cursor = await conn.execute(
+        "INSERT INTO inactive_algorithms (agent_id, algorithm_code, score, deposited_at) "
+        "VALUES (?, ?, ?, ?)",
+        (agent_id, algorithm_code, score, deposited_at),
+    )
+    return cursor.lastrowid
+
+
+async def count_inactive(conn: aiosqlite.Connection) -> int:
+    row = await (await conn.execute(
+        "SELECT COUNT(*) as c FROM inactive_algorithms"
+    )).fetchone()
+    return row["c"]
+
+
+async def pick_random_inactive(conn: aiosqlite.Connection) -> dict | None:
+    cursor = await conn.execute(
+        "SELECT id, agent_id, algorithm_code, score FROM inactive_algorithms "
+        "ORDER BY RANDOM() LIMIT 1"
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def remove_inactive(conn: aiosqlite.Connection, inactive_id: int) -> None:
+    await conn.execute(
+        "DELETE FROM inactive_algorithms WHERE id = ?", (inactive_id,)
+    )
+
+
+async def clear_agent_best(conn: aiosqlite.Connection, agent_id: str) -> None:
+    await conn.execute(
+        "DELETE FROM agent_bests WHERE agent_id = ?", (agent_id,)
+    )
