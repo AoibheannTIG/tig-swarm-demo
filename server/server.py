@@ -293,8 +293,11 @@ def _pick_inspiration(
     return random.choice(pool)
 
 
+FEED_PER_AGENT_MAX = 20
+
+
 @app.get("/api/state")
-async def get_state(agent_id: str | None = None):
+async def get_state(agent_id: str | None = None, feed_per_agent: int = 5):
     """Return current swarm state.
 
     When `agent_id` is supplied, the agent receives its own current best
@@ -303,8 +306,15 @@ async def get_state(agent_id: str | None = None):
     from config), a stagnation_hint field (50/50 "tacit_knowledge" or
     "inspiration") and inspiration_code are included.
 
+    `feed_per_agent` (default 5, capped at FEED_PER_AGENT_MAX=20) controls
+    how many of *each other active* agent's most recent hypotheses are
+    returned in the `ideas_in_flight` field — used by the requester to
+    avoid duplicating work currently being explored elsewhere in the swarm.
+    Set to 0 to disable.
+
     When `agent_id` is omitted, returns a global dashboard view.
     """
+    feed_per_agent = max(0, min(feed_per_agent, FEED_PER_AGENT_MAX))
     config = await get_config_cached()
     direction = await get_direction()
 
@@ -415,6 +425,35 @@ async def get_state(agent_id: str | None = None):
             )
             recent_hypotheses = [dict(row) for row in await cursor.fetchall()]
 
+            # ── Ideas in flight (top-N per other active agent) ──
+            # Each requester sees, for every *other* agent whose last_heartbeat
+            # is within the active window, that agent's `feed_per_agent` most
+            # recent hypotheses. Used to avoid duplicating work being explored
+            # elsewhere right now. SQLite window function: rank per agent_id by
+            # created_at DESC, keep ranks <= N.
+            ideas_in_flight: list[dict] = []
+            if feed_per_agent > 0:
+                cursor = await conn.execute(
+                    """WITH ranked AS (
+                           SELECT h.title, h.strategy_tag, h.created_at,
+                                  h.agent_id, a.name AS agent_name,
+                                  ROW_NUMBER() OVER (
+                                      PARTITION BY h.agent_id
+                                      ORDER BY h.created_at DESC
+                                  ) AS rn
+                           FROM hypotheses h
+                           JOIN agents a ON a.id = h.agent_id
+                           WHERE h.agent_id != ?
+                             AND a.last_heartbeat >= ?
+                       )
+                       SELECT title, strategy_tag, agent_name, created_at
+                       FROM ranked
+                       WHERE rn <= ?
+                       ORDER BY created_at DESC""",
+                    (agent_id, cutoff_ts, feed_per_agent),
+                )
+                ideas_in_flight = [dict(row) for row in await cursor.fetchall()]
+
             # Inspiration on stagnation (only when not trajectory-resetting)
             inspiration_code = None
             inspiration_agent_name = None
@@ -460,6 +499,7 @@ async def get_state(agent_id: str | None = None):
                      "description": h["description"]}
                     for h in recent_hypotheses
                 ],
+                "ideas_in_flight": ideas_in_flight,
                 "inspiration_code": inspiration_code,
                 "inspiration_agent_name": inspiration_agent_name,
                 "stagnation_hint": stagnation_hint,

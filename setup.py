@@ -113,6 +113,8 @@ CHALLENGES = {
 
 DEFAULT_TIMEOUT = 30
 DEFAULT_INSTANCES_PER_TRACK = 20
+DEFAULT_FEED_PER_AGENT = 5
+FEED_PER_AGENT_MAX = 20
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -411,6 +413,13 @@ def run_init() -> int:
         0, minimum=0,
     )
 
+    feed_per_agent = prompt_int(
+        "Ideas-in-flight feed: how many recent hypotheses to see per other "
+        f"active agent each iteration (0=disabled, max {FEED_PER_AGENT_MAX})",
+        DEFAULT_FEED_PER_AGENT, minimum=0,
+    )
+    feed_per_agent = min(feed_per_agent, FEED_PER_AGENT_MAX)
+
     print(
         "\nYour server URL is what agents POST to and what the dashboard\n"
         "lives at. Pick the form that matches how you're running it:\n"
@@ -435,6 +444,7 @@ def run_init() -> int:
         "timeout": timeout,
         "stagnation_threshold": stagnation_threshold,
         "stagnation_limit": stagnation_limit,
+        "feed_per_agent": feed_per_agent,
         "scoring_direction": challenge_meta["scoring_direction"],
     }
 
@@ -505,6 +515,15 @@ def run_join(server_url: str) -> int:
     )
     if challenge:
         write_challenge_md(challenge)
+
+    feed_per_agent = prompt_int(
+        "Ideas-in-flight feed: how many recent hypotheses to see per other "
+        f"active agent each iteration (0=disabled, max {FEED_PER_AGENT_MAX})",
+        (prior or {}).get("feed_per_agent", DEFAULT_FEED_PER_AGENT),
+        minimum=0,
+    )
+    feed_per_agent = min(feed_per_agent, FEED_PER_AGENT_MAX)
+
     # Stash a minimal record so a future re-run can swap the URL/challenge
     # without leaving stale strings in the templated files.
     write_swarm_config(
@@ -513,6 +532,7 @@ def run_join(server_url: str) -> int:
             "role": "contributor",
             "challenge": challenge or (prior or {}).get("challenge"),
             "algorithm_path": algorithm_path or (prior or {}).get("algorithm_path"),
+            "feed_per_agent": feed_per_agent,
         }
     )
 
@@ -603,6 +623,13 @@ def run_start() -> int:
         0, minimum=0,
     )
 
+    feed_per_agent = prompt_int(
+        "Ideas-in-flight feed: how many recent hypotheses to see per other "
+        f"active agent each iteration (0=disabled, max {FEED_PER_AGENT_MAX})",
+        DEFAULT_FEED_PER_AGENT, minimum=0,
+    )
+    feed_per_agent = min(feed_per_agent, FEED_PER_AGENT_MAX)
+
     # Tacit knowledge
     tk_path = init_personal_tacit_knowledge(stagnation_threshold)
     gather_tacit_knowledge(tk_path, stagnation_threshold)
@@ -664,6 +691,7 @@ def run_start() -> int:
         "timeout": timeout,
         "stagnation_threshold": stagnation_threshold,
         "stagnation_limit": stagnation_limit,
+        "feed_per_agent": feed_per_agent,
         "scoring_direction": challenge_meta["scoring_direction"],
         "algorithm_path": f"src/{challenge}/algorithm/mod.rs",
     }
