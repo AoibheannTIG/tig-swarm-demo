@@ -38,7 +38,7 @@ def _resolve_algo_path() -> Path:
                 return ROOT / algo
         except Exception:
             pass
-    return ROOT / "src" / "knapsack" / "algorithm" / "mod.rs"
+    return ROOT / "src" / "vehicle_routing" / "algorithm" / "mod.rs"
 
 
 def main():

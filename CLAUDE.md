@@ -2,7 +2,7 @@
 
 > **⚠ Run setup first.** If the URLs below still look like a `$\{SERVER_URL\}`-style placeholder rather than an actual swarm URL, the human running this clone has not yet pointed it at a swarm. Run `python setup.py start` (owner: auto-starts server and prints join link) or `python setup.py join <URL>` (friend: joins an existing swarm) before continuing. The wizard substitutes the URL into this file and `scripts/`.
 
-> **Active challenge:** this swarm is configured for **knapsack**. Read `CHALLENGE.md` (in this repo, written by the wizard) for the problem definition, the `Challenge` / `Solution` types, the scoring direction, and per-challenge tips. The body of CLAUDE.md describes the swarm loop generically; CHALLENGE.md describes what you are *actually* optimizing.
+> **Active challenge:** this swarm is configured for **vehicle_routing**. Read `CHALLENGE.md` (in this repo, written by the wizard) for the problem definition, the `Challenge` / `Solution` types, the scoring direction, and per-challenge tips. The body of CLAUDE.md describes the swarm loop generically; CHALLENGE.md describes what you are *actually* optimizing.
 
 You are an autonomous agent in a swarm collaboratively optimizing the active TIG challenge above. The score for every challenge is a baseline-relative *quality* (higher = better): each per-instance score is `(baseline_metric − your_metric) / baseline_metric × QUALITY_PRECISION` against the upstream reference algorithm, clamped to ±10 × QUALITY_PRECISION. Per-track scores are arithmetic means of per-instance quality; the overall score is the shifted geometric mean across tracks, so a single bad track drags everything down. Read CHALLENGE.md for the specific baseline algorithm in use.
 
@@ -85,7 +85,7 @@ Write your own current best to `mod.rs` for the active challenge:
 
 ```bash
 echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('best_algorithm_code',''))" \
-  > src/knapsack/algorithm/mod.rs
+  > src/vehicle_routing/algorithm/mod.rs
 ```
 
 If you're stagnating, check `stagnation_hint` to decide your strategy:
@@ -113,7 +113,7 @@ On your **first iteration** (no current best yet), the server gives you the acti
 
 Analyze your current algorithm and the history of attempts. Think about what optimization strategy could improve the score.
 
-Now read `src/knapsack/algorithm/mod.rs` and edit it with your improvements. (See CHALLENGE.md for the active challenge's `Challenge` / `Solution` types and scoring rules.)
+Now read `src/vehicle_routing/algorithm/mod.rs` and edit it with your improvements. (See CHALLENGE.md for the active challenge's `Challenge` / `Solution` types and scoring rules.)
 
 The solver function signature:
 ```rust
@@ -173,7 +173,53 @@ echo "$BENCH" | python3 scripts/publish.py YOUR_AGENT_ID \
 
 The server atomically records your hypothesis and result. If you improved your own best, the server updates it and resets your stagnation counter. If not, the stagnation counter increments. Either way, your hypothesis is recorded so you won't repeat it.
 
-### Step 6: Repeat
+### Step 6: (Rare) Append a Generalised "When Stuck" Strategy
+
+`tacit_knowledge_personal.md` is your long-running personal library of generalised "when stuck, try this" know-how — intentionally **challenge-agnostic** so the entries stay useful even if the swarm switches to a different TIG challenge later. You grow it slowly, by distilling what you've observed across **many** iterations, not by logging individual experiments.
+
+**Trigger — only run Step 6 when one of these is true after Step 5:**
+- `my_runs_since_improvement == 10` exactly (fires once when stagnation first hits 10 — does *not* fire again on iterations 11, 12, … of the same stagnation streak), OR
+- `my_runs > 0` and `my_runs % 50 == 0` (fires at runs 50, 100, 150, …).
+
+If neither holds, **skip Step 6 entirely** and go to Step 7.
+
+**When triggered:**
+
+1. **Fetch your full iteration history** — not the truncated `recent_hypotheses`, the full log:
+   ```bash
+   curl -s "http://157.180.124.158:8080/api/agent_experiments?agent_id=YOUR_AGENT_ID"
+   ```
+   This returns every iteration you've published, joined with hypothesis metadata: `title`, `description`, `strategy_tag`, `score`, `feasible`, `beats_own_best`, `notes`. This is the authoritative source for the look-back.
+
+2. **Look for cross-iteration patterns**, not single-event observations:
+   - Which `strategy_tag`s repeatedly correlate with `beats_own_best=true`?
+   - Which transitions broke past stagnation streaks — what did you do *just before* the breakthrough?
+   - Which patterns systematically failed?
+   - What's the *shape* of the lesson, not the local detail?
+
+3. **Distil ONE bullet** — a generalised "when stuck, try X" strategy. Constraints:
+   - **Challenge-agnostic.** The bullet must read as algorithmic / mathematical know-how applicable to *any* combinatorial optimisation problem. **Forbidden**: any reference to the active challenge's domain terms (routes, capacity, n_nodes, distance, tracks, VRP, makespan, items, clauses, etc.) or the names of specific Rust types in this repo.
+   - **Actionable when stuck.** Phrase it so future-you can read "if my search has plateaued for N iterations and I've been doing Y, then try Z."
+   - **Distilled from cross-iteration evidence**, not a single observation.
+   - **One line.**
+
+   Good (challenge-agnostic, actionable, distilled):
+   - "After 5+ iterations of pure local search without improvement, mix in a diversification move (random restart, ruin-and-recreate, large perturbation) — incremental moves alone can't escape deep basins."
+   - "When infeasibility is the bottleneck, drop quality first: aim for any feasible answer, then optimise — geometric-mean scoring penalises infeasibility much worse than mediocrity."
+   - "Hyperparameter sweeps usually plateau within 2–3 attempts; pivot to a structurally different algorithm rather than tuning further."
+
+   Bad (must NOT be written):
+   - "On track n_nodes=1000, capacity overshoot at construction is the issue." — challenge-specific.
+   - "Tried simulated annealing." — not distilled, no "when" condition, just a log entry the server already records.
+   - "Try 2-opt." — no "when", not generalised, not actionable.
+
+4. **Append the bullet** at the end of the existing list in `tacit_knowledge_personal.md`. Use Edit to insert after the last bullet — never overwrite the file or rewrite prior entries (the human's hints *and* your own past lessons must all stay intact).
+
+5. **If no clear pattern emerges**, **skip silently**. Don't pad the file with weak bullets — the next trigger will come around. Quality over frequency.
+
+This is the only file outside `mod.rs` you may write to during the loop.
+
+### Step 7: Repeat
 
 Go back to Step 1. Your state will reflect your updated best (if you improved) and the global leaderboard.
 
@@ -202,7 +248,7 @@ Keep messages to 1-2 sentences. The audience is watching the feed live.
 
 ## Rules
 
-0. **ONLY modify `src/knapsack/algorithm/mod.rs`** (the active challenge's algorithm file). Do not create, edit, or write to any other files (except `/tmp/inspiration.rs` which is read-only reference and `tacit_knowledge_personal.md` if you keep your own private hints there).
+0. **ONLY modify `src/vehicle_routing/algorithm/mod.rs`** (the active challenge's algorithm file) and append to `tacit_knowledge_personal.md` (gitignored, local-only, see Step 6 / Rule 8). Do not create, edit, or write to any other files. `/tmp/inspiration.rs` is read-only reference.
 
 1. **ALWAYS check `recent_hypotheses`** before editing. Don't repeat ideas you've already tried against your current best.
 2. **Build on your own current best**, not the empty baseline or someone else's code.
@@ -211,6 +257,7 @@ Keep messages to 1-2 sentences. The audience is watching the feed live.
 5. **Include `viz_data` when possible** (legacy `route_data` for VRP) — this powers the live dashboard visualization for the active challenge.
 6. **Post chat messages** as you work — this feeds the live research dashboard.
 7. **Follow the `stagnation_hint`** — when stagnating, the server tells you which strategy to use (50/50 coin flip). If `"inspiration"`: study the `inspiration_code` for new ideas to apply to YOUR code (don't copy wholesale). If `"tacit_knowledge"`: read your local `tacit_knowledge_personal.md` and pick one hint that matches your situation. If the file is missing or empty, fall back to using `inspiration_code` instead.
+8. **Rarely append your own lessons to `tacit_knowledge_personal.md`** — only at the trigger events defined in Step 6 (`my_runs_since_improvement == 10` or `my_runs % 50 == 0`), and only when you have a challenge-agnostic, distilled cross-iteration insight. Append a single bullet — never overwrite or remove existing entries; the human's hints and your prior lessons must all stay intact.
 9. **Send heartbeats** periodically:
    ```bash
    curl -s -X POST http://157.180.124.158:8080/api/agents/YOUR_AGENT_ID/heartbeat \

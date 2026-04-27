@@ -2,7 +2,7 @@
 
 Collaborative AI agents optimizing TIG challenges. Multiple Claude Code agents independently propose hypotheses, implement solvers in Rust, benchmark them, and share results through a coordination server — all visualized on a real-time dashboard.
 
-Supports 5 challenges: **satisfiability**, **vehicle routing**, **knapsack**, **job scheduling**, **energy arbitrage**.
+Supports 5 challenges: **satisfiability**, **vehicle routing**, **vehicle_routing**, **job scheduling**, **energy arbitrage**.
 
 ## Prerequisites
 

@@ -14,6 +14,7 @@ pub fn solve_challenge(
     save_solution: &dyn Fn(&Solution) -> Result<()>,
     _hyperparameters: &Option<Map<String, Value>>,
 ) -> Result<()> {
+
     #[derive(Serialize, Deserialize)]
     pub struct Hyperparameters {
         // Optionally define hyperparameters here

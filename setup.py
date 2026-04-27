@@ -265,7 +265,29 @@ def write_challenge_md(challenge: str) -> None:
     print(f"  wrote {dst.relative_to(ROOT)} (from {src.relative_to(ROOT)})")
 
 
-def init_personal_tacit_knowledge() -> Path:
+def tacit_header(stagnation_threshold: int = 2) -> str:
+    """Standard header text written into the personal tacit-knowledge file.
+    Parameterised on stagnation_threshold so the >= condition matches the
+    swarm's actual config (the server reads stagnation_threshold from the
+    same swarm.config.json the wizard writes)."""
+    return (
+        "# Personal tacit knowledge\n\n"
+        "Hints only **your local Claude agent** sees. Never sent to the server.\n"
+        "Other agents in the swarm cannot read this file.\n\n"
+        f"Read by your agent when stagnating (`my_runs_since_improvement >= {stagnation_threshold}`)\n"
+        "— at that point the server randomly picks (50/50) between this file\n"
+        "and the swarm's `inspiration_code` for the iteration's hint.\n\n"
+        "Your local Claude agent occasionally appends its own distilled,\n"
+        "challenge-agnostic \"when stuck, try X\" lessons here — specifically\n"
+        "when it has stagnated 10 iterations in a row, or every 50 total\n"
+        "iterations. These are general algorithmic know-how derived from\n"
+        "looking back at every iteration so far, intentionally written so they\n"
+        "stay useful even if the swarm switches to a different challenge later.\n\n"
+        "## Strategies\n\n"
+    )
+
+
+def init_personal_tacit_knowledge(stagnation_threshold: int = 2) -> Path:
     """Create the contributor's private tacit_knowledge file if missing.
     The agent later renames it to tacit_knowledge_<agent_name>.md after it
     learns its own name from POST /api/agents/register."""
@@ -273,16 +295,76 @@ def init_personal_tacit_knowledge() -> Path:
     if path.exists():
         return path
     path.write_text(
-        "# Personal tacit knowledge\n\n"
-        "Hints only **your local Claude agent** sees. Never sent to the server.\n"
-        "Other agents in the swarm cannot read this file.\n\n"
-        "Read by your agent when stagnating (`my_runs_since_improvement >= 2`).\n\n"
-        "## When stuck, try…\n\n"
-        "- (replace this with your own hint)\n"
-        "- (add as many as you want)\n"
+        tacit_header(stagnation_threshold)
+        + "- (replace this with your own hint, or run setup again)\n"
     )
     print(f"  created {path.relative_to(ROOT)} (gitignored — edit it any time)")
     return path
+
+
+def gather_tacit_knowledge(tk_path: Path, stagnation_threshold: int = 2) -> None:
+    """Populate the personal tacit-knowledge file, all at once.
+
+    Three input modes (no per-hint loop):
+      1. Upload from an existing file (give a path; whole file is copied in).
+      2. Paste/type every strategy at once in the terminal, ended by Ctrl-D
+         (Unix) or Ctrl-Z+Enter (Windows). The whole block is dropped into
+         the file verbatim — bullet style is up to the user.
+      3. Skip — the stub stays in place.
+    """
+    print(
+        "\n── Tacit knowledge (optional) ──\n"
+        "Give your local Claude agent private strategy hints. These are read\n"
+        f"when the agent stagnates ({stagnation_threshold}+ iterations without improvement) —\n"
+        "at which point the server picks 50/50 between consulting this file and\n"
+        "the swarm's `inspiration_code` for the iteration's hint. The file is\n"
+        "gitignored and never sent to the server.\n"
+    )
+    print("How would you like to provide them?")
+    print("  1. Upload from an existing tacit-knowledge file (give a path)")
+    print("  2. Type or paste every strategy now, all at once")
+    print("  3. Skip — leave the existing file in place\n")
+
+    while True:
+        choice = input("Choice 1/2/3 [3]: ").strip() or "3"
+        if choice in ("1", "2", "3"):
+            break
+        print("  invalid choice; pick 1, 2, or 3")
+
+    if choice == "3":
+        print(f"  no hints added (edit {tk_path.relative_to(ROOT)} any time)")
+        return
+
+    if choice == "1":
+        src = input("Path to your tacit-knowledge file: ").strip()
+        if not src:
+            print("  no path given; leaving existing file in place")
+            return
+        src_path = Path(src).expanduser()
+        if not src_path.is_file():
+            print(f"  not a file: {src_path}; leaving existing file in place")
+            return
+        tk_path.write_text(src_path.read_text())
+        print(f"  copied {src_path} -> {tk_path.relative_to(ROOT)}")
+        return
+
+    # choice == "2": single multi-line paste
+    print(
+        "\nPaste or type ALL of your strategies below — one per line, any\n"
+        "format you like. When finished, press Ctrl-D (Unix/macOS) or\n"
+        "Ctrl-Z then Enter (Windows) to submit.\n"
+    )
+    try:
+        text = sys.stdin.read()
+    except KeyboardInterrupt:
+        print("\n  cancelled — leaving existing file in place")
+        return
+    text = text.strip()
+    if not text:
+        print("  no text entered; leaving existing file in place")
+        return
+    tk_path.write_text(tacit_header(stagnation_threshold) + text + "\n")
+    print(f"  wrote your strategies to {tk_path.relative_to(ROOT)}")
 
 
 # ── Modes ────────────────────────────────────────────────────────────
@@ -377,36 +459,8 @@ def run_init() -> int:
     print("\nPushing swarm config to server (best effort)…")
     push_config_to_server(server_url, admin_key, cfg)
 
-    print(
-        "\n── Tacit knowledge (optional) ──\n"
-        "You can give your local Claude agent private strategy hints that\n"
-        "other agents in the swarm never see. These are read when the agent\n"
-        f"stagnates ({stagnation_threshold}+ iterations without improvement).\n"
-        "When stagnating, the server randomly picks (50/50) between tacit\n"
-        "knowledge and swarm inspiration for each iteration.\n"
-        "Examples: 'Try simulated annealing with cooling schedule',\n"
-        "          'Focus on the interaction_values matrix structure'\n"
-    )
-    tk_path = init_personal_tacit_knowledge()
-    hints: list[str] = []
-    while True:
-        hint = input("Add a hint (or press Enter to skip): ").strip()
-        if not hint:
-            break
-        hints.append(hint)
-    if hints:
-        lines = [
-            "# Personal tacit knowledge\n",
-            "Hints only **your local Claude agent** sees. Never sent to the server.\n",
-            f"Read by your agent when stagnating (`my_runs_since_improvement >= {stagnation_threshold}`).\n",
-            "\n## When stuck, try…\n",
-        ]
-        for h in hints:
-            lines.append(f"- {h}\n")
-        tk_path.write_text("\n".join(lines))
-        print(f"  wrote {len(hints)} hint(s) to {tk_path.relative_to(ROOT)}")
-    else:
-        print(f"  no hints added (edit {tk_path.relative_to(ROOT)} any time)")
+    tk_path = init_personal_tacit_knowledge(stagnation_threshold)
+    gather_tacit_knowledge(tk_path, stagnation_threshold)
 
     print(
         "\nDone. Next steps:\n"
@@ -462,36 +516,8 @@ def run_join(server_url: str) -> int:
         }
     )
 
-    print(
-        "\n── Tacit knowledge (optional) ──\n"
-        "You can give your local Claude agent private strategy hints that\n"
-        "other agents in the swarm never see. These are read when the agent\n"
-        f"stagnates ({stagnation_threshold}+ iterations without improvement).\n"
-        "When stagnating, the server randomly picks (50/50) between tacit\n"
-        "knowledge and swarm inspiration for each iteration.\n"
-        "Examples: 'Try simulated annealing with cooling schedule',\n"
-        "          'Focus on the interaction_values matrix structure'\n"
-    )
-    tk_path = init_personal_tacit_knowledge()
-    hints: list[str] = []
-    while True:
-        hint = input("Add a hint (or press Enter to skip): ").strip()
-        if not hint:
-            break
-        hints.append(hint)
-    if hints:
-        lines = [
-            "# Personal tacit knowledge\n",
-            "Hints only **your local Claude agent** sees. Never sent to the server.\n",
-            f"Read by your agent when stagnating (`my_runs_since_improvement >= {stagnation_threshold}`).\n",
-            "\n## When stuck, try…\n",
-        ]
-        for h in hints:
-            lines.append(f"- {h}\n")
-        tk_path.write_text("\n".join(lines))
-        print(f"  wrote {len(hints)} hint(s) to {tk_path.relative_to(ROOT)}")
-    else:
-        print(f"  no hints added (edit {tk_path.relative_to(ROOT)} any time)")
+    tk_path = init_personal_tacit_knowledge(stagnation_threshold)
+    gather_tacit_knowledge(tk_path, stagnation_threshold)
 
     print(
         "\nDone. Open Claude Code in this directory and have it read\n"
@@ -578,29 +604,8 @@ def run_start() -> int:
     )
 
     # Tacit knowledge
-    print(
-        "\n── Tacit knowledge (optional) ──\n"
-        "Give your local Claude agent private strategy hints.\n"
-        f"These are read when stagnating ({stagnation_threshold}+ iterations without improvement).\n"
-    )
-    tk_path = init_personal_tacit_knowledge()
-    hints: list[str] = []
-    while True:
-        hint = input("Add a hint (or press Enter to skip): ").strip()
-        if not hint:
-            break
-        hints.append(hint)
-    if hints:
-        lines = [
-            "# Personal tacit knowledge\n",
-            "Hints only **your local Claude agent** sees. Never sent to the server.\n",
-            f"Read by your agent when stagnating (`my_runs_since_improvement >= {stagnation_threshold}`).\n",
-            "\n## When stuck, try…\n",
-        ]
-        for h in hints:
-            lines.append(f"- {h}\n")
-        tk_path.write_text("\n".join(lines))
-        print(f"  wrote {len(hints)} hint(s) to {tk_path.relative_to(ROOT)}")
+    tk_path = init_personal_tacit_knowledge(stagnation_threshold)
+    gather_tacit_knowledge(tk_path, stagnation_threshold)
 
     # Ensure data directory exists
     data_dir = ROOT / "server" / "data"
