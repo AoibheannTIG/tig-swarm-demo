@@ -1,11 +1,12 @@
 use super::*;
-use anyhow::Result;
-use rand::{rngs::SmallRng, Rng, SeedableRng};
+use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::time::Instant;
+use rand::{rngs::SmallRng, Rng, SeedableRng};
 
 pub fn help() {
-    println!("ALNS with simulated annealing for VRPTW");
+    // Print help information about your algorithm here. It will be invoked with `help_algorithm` script
+    println!("Greedy nearest-neighbor heuristic for VRPTW");
 }
 
 pub fn solve_challenge(
@@ -13,594 +14,214 @@ pub fn solve_challenge(
     save_solution: &dyn Fn(&Solution) -> Result<()>,
     _hyperparameters: &Option<Map<String, Value>>,
 ) -> Result<()> {
-    let start = Instant::now();
-    let time_limit_ms = 27_500u128;
-    let n = challenge.num_nodes;
-    let dm = &challenge.distance_matrix;
-    let rt = &challenge.ready_times;
-    let dt = &challenge.due_times;
-    let st = challenge.service_time;
-    let demands = &challenge.demands;
-    let cap = challenge.max_capacity;
-    let fleet = challenge.fleet_size;
-    let mut rng = SmallRng::seed_from_u64(n as u64 * 31337 + 42);
 
-    fn check_tw(route: &[usize], dm: &[Vec<i32>], st: i32, rt: &[i32], dt: &[i32]) -> bool {
-        let mut time = 0i32;
-        for i in 0..route.len() - 1 {
-            time += dm[route[i]][route[i + 1]];
-            if time > dt[route[i + 1]] {
+    #[derive(Serialize, Deserialize)]
+    pub struct Hyperparameters {
+        // Optionally define hyperparameters here
+    }
+    fn is_feasible(
+        route: &Vec<usize>,
+        distance_matrix: &Vec<Vec<i32>>,
+        service_time: i32,
+        ready_times: &Vec<i32>,
+        due_times: &Vec<i32>,
+        mut curr_node: usize,
+        mut curr_time: i32,
+        start_pos: usize,
+    ) -> bool {
+        let mut valid = true;
+        for pos in start_pos..route.len() {
+            let next_node = route[pos];
+            curr_time += distance_matrix[curr_node][next_node];
+            if curr_time > due_times[route[pos]] {
+                valid = false;
+                break;
+            }
+            curr_time = curr_time.max(ready_times[next_node]) + service_time;
+            curr_node = next_node;
+        }
+        valid
+    }
+    
+    fn find_best_insertion(
+        route: &Vec<usize>,
+        remaining_nodes: Vec<usize>,
+        distance_matrix: &Vec<Vec<i32>>,
+        service_time: i32,
+        ready_times: &Vec<i32>,
+        due_times: &Vec<i32>,
+    ) -> Option<(usize, usize)> {
+        let alpha1 = 1;
+        let alpha2 = 0;
+        let lambda = 1;
+    
+        let mut best_c2 = None;
+        let mut best = None;
+        for insert_node in remaining_nodes {
+            let mut best_c1 = None;
+    
+            let mut curr_time = 0;
+            let mut curr_node = 0;
+            for pos in 1..route.len() {
+                let next_node = route[pos];
+                let new_arrival_time =
+                    ready_times[insert_node].max(curr_time + distance_matrix[curr_node][insert_node]);
+                if new_arrival_time > due_times[insert_node] {
+                    continue;
+                }
+                let old_arrival_time =
+                    ready_times[next_node].max(curr_time + distance_matrix[curr_node][next_node]);
+    
+                // Distance criterion: c11 = d(i,u) + d(u,j) - mu * d(i,j)
+                let c11 = distance_matrix[curr_node][insert_node]
+                    + distance_matrix[insert_node][next_node]
+                    - distance_matrix[curr_node][next_node];
+    
+                // Time criterion: c12 = b_ju - b_j (the shift in arrival time at position 'pos').
+                let c12 = new_arrival_time - old_arrival_time;
+    
+                let c1 = -(alpha1 * c11 + alpha2 * c12);
+                let c2 = lambda * distance_matrix[0][insert_node] + c1;
+    
+                if best_c1.is_none_or(|x| c1 > x)
+                    && best_c2.is_none_or(|x| c2 > x)
+                    && is_feasible(
+                        route,
+                        distance_matrix,
+                        service_time,
+                        ready_times,
+                        due_times,
+                        insert_node,
+                        new_arrival_time + service_time,
+                        pos,
+                    )
+                {
+                    best_c1 = Some(c1);
+                    best_c2 = Some(c2);
+                    best = Some((insert_node, pos));
+                }
+    
+                curr_time = ready_times[next_node]
+                    .max(curr_time + distance_matrix[curr_node][next_node])
+                    + service_time;
+                curr_node = next_node;
+            }
+        }
+        best
+    }
+    
+    let mut routes = Vec::new();
+
+    let mut nodes: Vec<usize> = (1..challenge.num_nodes).collect();
+    nodes.sort_by(|&a, &b| challenge.distance_matrix[0][a].cmp(&challenge.distance_matrix[0][b]));
+
+    let mut remaining: Vec<bool> = vec![true; challenge.num_nodes];
+    remaining[0] = false;
+
+    // popping furthest node from depot
+    while let Some(node) = nodes.pop() {
+        if !remaining[node] {
+            continue;
+        }
+        remaining[node] = false;
+        let mut route = vec![0, node, 0];
+        let mut route_demand = challenge.demands[node];
+
+        while let Some((best_node, best_pos)) = find_best_insertion(
+            &route,
+            remaining
+                .iter()
+                .enumerate()
+                .filter(|(n, &flag)| {
+                    flag && route_demand + challenge.demands[*n] <= challenge.max_capacity
+                })
+                .map(|(n, _)| n)
+                .collect(),
+            &challenge.distance_matrix,
+            challenge.service_time,
+            &challenge.ready_times,
+            &challenge.due_times,
+        ) {
+            remaining[best_node] = false;
+            route_demand += challenge.demands[best_node];
+            route.insert(best_pos, best_node);
+        }
+
+        routes.push(route);
+    }
+
+    fn route_feasible(
+        route: &Vec<usize>,
+        dm: &Vec<Vec<i32>>,
+        service_time: i32,
+        ready_times: &Vec<i32>,
+        due_times: &Vec<i32>,
+    ) -> bool {
+        let mut t: i32 = 0;
+        let mut prev: usize = route[0];
+        for k in 1..route.len() {
+            let n = route[k];
+            t = (t + dm[prev][n]).max(ready_times[n]);
+            if t > due_times[n] {
                 return false;
             }
-            time = time.max(rt[route[i + 1]]) + st;
+            t += service_time;
+            prev = n;
         }
         true
     }
 
-    fn route_cost(route: &[usize], dm: &[Vec<i32>]) -> i64 {
-        let mut c = 0i64;
-        for i in 0..route.len() - 1 {
-            c += dm[route[i]][route[i + 1]] as i64;
-        }
-        c
-    }
+    save_solution(&Solution { routes: routes.clone() })?;
 
-    fn solution_cost(routes: &[Vec<usize>], dm: &[Vec<i32>]) -> i64 {
-        routes.iter().map(|r| route_cost(r, dm)).sum()
-    }
-
-    fn route_demand(route: &[usize], demands: &[i32]) -> i32 {
-        route.iter().map(|&node| demands[node]).sum()
-    }
-
-    // ===== Construction: Solomon I1 insertion heuristic =====
-    let mut routes: Vec<Vec<usize>> = Vec::new();
-    let mut node_order: Vec<usize> = (1..n).collect();
-    node_order.sort_by(|&a, &b| dm[0][a].cmp(&dm[0][b]));
-    let mut unrouted = vec![true; n];
-    unrouted[0] = false;
-
-    while let Some(seed_node) = node_order.pop() {
-        if !unrouted[seed_node] {
-            continue;
-        }
-        unrouted[seed_node] = false;
-        let mut route = vec![0, seed_node, 0];
-        let mut load = demands[seed_node];
-
-        loop {
-            let mut best: Option<(usize, usize, i32)> = None;
-            for node in 0..n {
-                if !unrouted[node] || load + demands[node] > cap {
-                    continue;
-                }
-                let mut t = 0i32;
-                for pos in 1..route.len() {
-                    let prev = route[pos - 1];
-                    let next = route[pos];
-                    let arr = t + dm[prev][node];
-                    if arr > dt[node] {
-                        t = (t + dm[prev][next]).max(rt[next]) + st;
-                        continue;
-                    }
-                    let mut t2 = arr.max(rt[node]) + st;
-                    let mut ok = true;
-                    let mut p2 = node;
-                    for k in pos..route.len() {
-                        t2 += dm[p2][route[k]];
-                        if t2 > dt[route[k]] {
-                            ok = false;
-                            break;
-                        }
-                        t2 = t2.max(rt[route[k]]) + st;
-                        p2 = route[k];
-                    }
-                    if ok {
-                        let c1 = dm[prev][node] + dm[node][next] - dm[prev][next];
-                        let c2 = dm[0][node] - c1;
-                        if best.is_none() || c2 > best.unwrap().2 {
-                            best = Some((node, pos, c2));
-                        }
-                    }
-                    t = (t + dm[prev][next]).max(rt[next]) + st;
-                }
-            }
-            match best {
-                Some((node, pos, _)) => {
-                    unrouted[node] = false;
-                    load += demands[node];
-                    route.insert(pos, node);
-                }
-                None => break,
-            }
-        }
-        routes.push(route);
-    }
-
-    // Post-construction: merge excess routes to respect fleet_size
-    while routes.len() > fleet {
-        let min_ri = routes
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, r)| r.len())
-            .map(|(i, _)| i)
-            .unwrap();
-        let small_route = routes.remove(min_ri);
-        let customers: Vec<usize> = small_route[1..small_route.len() - 1].to_vec();
-        let mut failed = false;
-        for cu in customers {
-            let mut best_ic = i32::MAX;
-            let mut best_rj = 0;
-            let mut best_p = 0;
-            let mut found = false;
-            for (rj, route) in routes.iter().enumerate() {
-                if route_demand(route, demands) + demands[cu] > cap {
-                    continue;
-                }
-                for p in 1..route.len() {
-                    let ic =
-                        dm[route[p - 1]][cu] + dm[cu][route[p]] - dm[route[p - 1]][route[p]];
-                    if ic < best_ic {
-                        let mut cand = route.clone();
-                        cand.insert(p, cu);
-                        if check_tw(&cand, dm, st, rt, dt) {
-                            best_ic = ic;
-                            best_rj = rj;
-                            best_p = p;
-                            found = true;
-                        }
-                    }
-                }
-            }
-            if found {
-                routes[best_rj].insert(best_p, cu);
-            } else {
-                routes.push(vec![0, cu, 0]);
-                failed = true;
-            }
-        }
-        if failed {
-            break;
-        }
-    }
-
-    let mut best_cost = solution_cost(&routes, dm);
-    let mut best_routes = routes.clone();
-    save_solution(&Solution {
-        routes: routes.clone(),
-    })?;
-
-    // ===== Local Search =====
-    fn do_ls(
-        routes: &mut Vec<Vec<usize>>,
-        dm: &[Vec<i32>],
-        st: i32,
-        rt: &[i32],
-        dt: &[i32],
-        demands: &[i32],
-        cap: i32,
-        start: &Instant,
-        deadline: u128,
-    ) {
-        let mut any = true;
-        while any && start.elapsed().as_millis() < deadline {
-            any = false;
-
-            // 2-opt (intra-route)
-            let mut imp = true;
-            while imp && start.elapsed().as_millis() < deadline {
-                imp = false;
-                'two_opt: for ri in 0..routes.len() {
-                    let rlen = routes[ri].len();
-                    if rlen <= 4 {
-                        continue;
-                    }
-                    for i in 1..rlen - 2 {
-                        if start.elapsed().as_millis() >= deadline {
-                            return;
-                        }
-                        for j in (i + 1)..rlen - 1 {
-                            let d = dm[routes[ri][i - 1]][routes[ri][j]]
-                                + dm[routes[ri][i]][routes[ri][j + 1]]
-                                - dm[routes[ri][i - 1]][routes[ri][i]]
-                                - dm[routes[ri][j]][routes[ri][j + 1]];
-                            if d < 0 {
-                                let mut c = routes[ri].clone();
-                                c[i..=j].reverse();
-                                if check_tw(&c, dm, st, rt, dt) {
-                                    routes[ri] = c;
-                                    imp = true;
-                                    any = true;
-                                    break 'two_opt;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Or-opt: intra-route single-customer relocate
-            imp = true;
-            while imp && start.elapsed().as_millis() < deadline {
-                imp = false;
-                'oropt: for ri in 0..routes.len() {
-                    let rlen = routes[ri].len();
-                    if rlen <= 3 {
-                        continue;
-                    }
-                    for i in 1..rlen - 1 {
-                        if start.elapsed().as_millis() >= deadline {
-                            return;
-                        }
-                        let cu = routes[ri][i];
-                        let savings = dm[routes[ri][i - 1]][cu] + dm[cu][routes[ri][i + 1]]
-                            - dm[routes[ri][i - 1]][routes[ri][i + 1]];
-                        let mut nr: Vec<usize> = Vec::with_capacity(rlen);
-                        for k in 0..rlen {
-                            if k != i {
-                                nr.push(routes[ri][k]);
-                            }
-                        }
-                        for j in 1..nr.len() {
-                            let ic = dm[nr[j - 1]][cu] + dm[cu][nr[j]] - dm[nr[j - 1]][nr[j]];
-                            if ic < savings {
-                                let mut cand = nr.clone();
-                                cand.insert(j, cu);
-                                if check_tw(&cand, dm, st, rt, dt) {
-                                    routes[ri] = cand;
-                                    imp = true;
-                                    any = true;
-                                    break 'oropt;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Relocate (inter-route)
-            imp = true;
-            while imp && start.elapsed().as_millis() < deadline {
-                imp = false;
-                'rel: for ri in 0..routes.len() {
-                    for ci in 1..routes[ri].len() - 1 {
-                        if start.elapsed().as_millis() >= deadline {
-                            return;
-                        }
-                        let cu = routes[ri][ci];
-                        let sv = dm[routes[ri][ci - 1]][cu] + dm[cu][routes[ri][ci + 1]]
-                            - dm[routes[ri][ci - 1]][routes[ri][ci + 1]];
-                        let mut bg = 0i32;
-                        let mut bt: Option<(usize, usize)> = None;
-                        for rj in 0..routes.len() {
-                            if ri == rj {
-                                continue;
-                            }
-                            if route_demand(&routes[rj], demands) + demands[cu] > cap {
-                                continue;
-                            }
-                            for p in 1..routes[rj].len() {
-                                let ic = dm[routes[rj][p - 1]][cu] + dm[cu][routes[rj][p]]
-                                    - dm[routes[rj][p - 1]][routes[rj][p]];
-                                if sv - ic > bg {
-                                    let mut cand = routes[rj].clone();
-                                    cand.insert(p, cu);
-                                    if check_tw(&cand, dm, st, rt, dt) {
-                                        bg = sv - ic;
-                                        bt = Some((rj, p));
-                                    }
-                                }
-                            }
-                        }
-                        if let Some((rj, p)) = bt {
-                            routes[ri].remove(ci);
-                            routes[rj].insert(p, cu);
-                            if routes[ri].len() <= 2 {
-                                routes.remove(ri);
-                            }
-                            imp = true;
-                            any = true;
-                            break 'rel;
-                        }
-                    }
-                }
-            }
-
-            // Exchange (inter-route swap)
-            imp = true;
-            while imp && start.elapsed().as_millis() < deadline {
-                imp = false;
-                'exc: for ri in 0..routes.len() {
-                    for ci in 1..routes[ri].len() - 1 {
-                        if start.elapsed().as_millis() >= deadline {
-                            return;
-                        }
-                        let c1 = routes[ri][ci];
-                        for rj in (ri + 1)..routes.len() {
-                            for cj in 1..routes[rj].len() - 1 {
-                                let c2 = routes[rj][cj];
-                                if route_demand(&routes[ri], demands) + demands[c2] - demands[c1]
-                                    > cap
-                                {
-                                    continue;
-                                }
-                                if route_demand(&routes[rj], demands) + demands[c1] - demands[c2]
-                                    > cap
-                                {
-                                    continue;
-                                }
-                                let delta = dm[routes[ri][ci - 1]][c2]
-                                    + dm[c2][routes[ri][ci + 1]]
-                                    - dm[routes[ri][ci - 1]][c1]
-                                    - dm[c1][routes[ri][ci + 1]]
-                                    + dm[routes[rj][cj - 1]][c1]
-                                    + dm[c1][routes[rj][cj + 1]]
-                                    - dm[routes[rj][cj - 1]][c2]
-                                    - dm[c2][routes[rj][cj + 1]];
-                                if delta < 0 {
-                                    let mut rc = routes[ri].clone();
-                                    let mut rjc = routes[rj].clone();
-                                    rc[ci] = c2;
-                                    rjc[cj] = c1;
-                                    if check_tw(&rc, dm, st, rt, dt)
-                                        && check_tw(&rjc, dm, st, rt, dt)
-                                    {
-                                        routes[ri] = rc;
-                                        routes[rj] = rjc;
-                                        imp = true;
-                                        any = true;
-                                        break 'exc;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Initial local search
-    do_ls(
-        &mut routes,
-        dm,
-        st,
-        rt,
-        dt,
-        demands,
-        cap,
-        &start,
-        time_limit_ms,
-    );
-    let c = solution_cost(&routes, dm);
-    if c < best_cost && routes.len() <= fleet {
-        best_cost = c;
-        best_routes = routes.clone();
-        save_solution(&Solution {
-            routes: routes.clone(),
-        })?;
-    }
-
-    // ===== ALNS: Destroy + Repair with Simulated Annealing =====
-    let mut temp = best_cost as f64 * 0.03;
-    let cool = 0.97;
-    let mut cur_cost = solution_cost(&routes, dm);
-
-    while start.elapsed().as_millis() < time_limit_ms {
-        let mut tr = routes.clone();
-        let num_cust: usize = tr.iter().map(|r| r.len().saturating_sub(2)).sum();
-        if num_cust < 4 {
-            break;
-        }
-        let lo = (num_cust / 8).max(3);
-        let hi = (num_cust * 3 / 10).max(lo);
-        let k = rng.gen_range(lo..=hi).min(num_cust);
-
-        // Destroy: choose between random, worst, or Shaw removal
-        let mut removed = Vec::new();
-        let mut removed_set = vec![false; n];
-        let destroy_choice = rng.gen_range(0u32..10);
-
-        let remove_node = |cu: usize, tr: &mut Vec<Vec<usize>>| {
-            for route in tr.iter_mut() {
-                if let Some(pos) = route[1..route.len() - 1].iter().position(|&x| x == cu) {
-                    route.remove(pos + 1);
-                    return;
-                }
-            }
-        };
-
-        if destroy_choice < 4 {
-            // Shaw removal: remove geographically related customers
-            let all_custs: Vec<usize> = tr
-                .iter()
-                .flat_map(|r| r[1..r.len() - 1].iter().copied())
-                .collect();
-            if all_custs.is_empty() {
-                break;
-            }
-            let seed = all_custs[rng.gen_range(0..all_custs.len())];
-            let mut related: Vec<(usize, i32)> = all_custs
-                .iter()
-                .filter(|&&c| c != seed)
-                .map(|&c| (c, dm[seed][c] + (rt[seed] - rt[c]).abs() / 2))
-                .collect();
-            related.sort_by_key(|&(_, r)| r);
-
-            removed_set[seed] = true;
-            removed.push(seed);
-            remove_node(seed, &mut tr);
-
-            for _ in 1..k {
-                let remaining: Vec<usize> = related
-                    .iter()
-                    .filter(|&&(c, _)| !removed_set[c])
-                    .map(|&(c, _)| c)
-                    .collect();
-                if remaining.is_empty() {
-                    break;
-                }
-                let p = rng.gen::<f64>().powi(3);
-                let idx = (p * remaining.len() as f64) as usize % remaining.len();
-                let cu = remaining[idx];
-                removed_set[cu] = true;
-                removed.push(cu);
-                remove_node(cu, &mut tr);
-            }
-        } else {
-            // Worst removal (destroy_choice 4-7) or random removal (8-9)
-            let use_worst = destroy_choice < 8;
-            for _ in 0..k {
-                let mut cands: Vec<(usize, i32)> = Vec::new();
-                for route in tr.iter() {
-                    for ci in 1..route.len() - 1 {
-                        let cu = route[ci];
-                        if removed_set[cu] {
-                            continue;
-                        }
-                        let sv = dm[route[ci - 1]][cu] + dm[cu][route[ci + 1]]
-                            - dm[route[ci - 1]][route[ci + 1]];
-                        cands.push((cu, sv));
-                    }
-                }
-                if cands.is_empty() {
-                    break;
-                }
-
-                let idx = if use_worst {
-                    cands.sort_by(|a, b| b.1.cmp(&a.1));
-                    let p = rng.gen::<f64>().powi(3);
-                    (p * cands.len() as f64) as usize % cands.len()
-                } else {
-                    rng.gen_range(0..cands.len())
-                };
-                let (cu, _) = cands[idx];
-                removed_set[cu] = true;
-                removed.push(cu);
-                remove_node(cu, &mut tr);
-            }
-        }
-        tr.retain(|r| r.len() > 2);
-
-        // Repair: regret-2 insertion (NO time limit — must reinsert all nodes)
-        while !removed.is_empty() {
-            let mut best_ri = 0usize;
-            let mut best_route_idx = 0usize;
-            let mut best_pos = 0usize;
-            let mut best_regret = i32::MIN;
-            let mut found = false;
-
-            for (ri, &cu) in removed.iter().enumerate() {
-                let mut b1_cost = i32::MAX;
-                let mut b1_route = 0usize;
-                let mut b1_pos = 0usize;
-                let mut b2_cost = i32::MAX;
-
-                for (rj, route) in tr.iter().enumerate() {
-                    if route_demand(route, demands) + demands[cu] > cap {
-                        continue;
-                    }
-                    for p in 1..route.len() {
-                        let ic = dm[route[p - 1]][cu] + dm[cu][route[p]]
-                            - dm[route[p - 1]][route[p]];
-                        if ic < b1_cost || ic < b2_cost {
-                            let mut cand = route.clone();
-                            cand.insert(p, cu);
-                            if check_tw(&cand, dm, st, rt, dt) {
-                                if ic < b1_cost {
-                                    b2_cost = b1_cost;
-                                    b1_cost = ic;
-                                    b1_route = rj;
-                                    b1_pos = p;
-                                } else {
-                                    b2_cost = ic;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if b1_cost < i32::MAX {
-                    let regret = if b2_cost < i32::MAX {
-                        b2_cost - b1_cost
-                    } else {
-                        10000
-                    };
-                    if regret > best_regret {
-                        best_regret = regret;
-                        best_ri = ri;
-                        best_route_idx = b1_route;
-                        best_pos = b1_pos;
-                        found = true;
-                    }
-                }
-            }
-
-            if found {
-                let cu = removed.remove(best_ri);
-                tr[best_route_idx].insert(best_pos, cu);
-            } else {
-                for cu in removed.drain(..) {
-                    tr.push(vec![0, cu, 0]);
-                }
-            }
-        }
-
-        // Quick local search on repaired solution
-        let ls_dl = (start.elapsed().as_millis() + 1500).min(time_limit_ms);
-        do_ls(&mut tr, dm, st, rt, dt, demands, cap, &start, ls_dl);
-
-        // Feasibility gate: skip if too many routes or missing nodes
-        if tr.len() > fleet {
-            temp *= cool;
-            continue;
-        }
-        {
-            let mut ok = true;
-            let mut visited = vec![false; n];
-            visited[0] = true;
-            for route in &tr {
-                for &node in &route[1..route.len() - 1] {
-                    visited[node] = true;
-                }
-            }
-            if !visited.iter().all(|&v| v) {
-                ok = false;
-            }
-            if !ok {
-                temp *= cool;
+    let dm = &challenge.distance_matrix;
+    let st = challenge.service_time;
+    let rt = &challenge.ready_times;
+    let dt = &challenge.due_times;
+    let mut improved_any = true;
+    while improved_any {
+        improved_any = false;
+        for r in 0..routes.len() {
+            if routes[r].len() < 5 {
                 continue;
             }
-        }
-
-        let new_cost = solution_cost(&tr, dm);
-        let delta = new_cost - cur_cost;
-
-        let accept = if delta < 0 {
-            true
-        } else if temp > 1.0 {
-            rng.gen::<f64>() < (-(delta as f64) / temp).exp()
-        } else {
-            false
-        };
-
-        if accept {
-            routes = tr;
-            cur_cost = new_cost;
-            if cur_cost < best_cost {
-                best_cost = cur_cost;
-                best_routes = routes.clone();
-                save_solution(&Solution {
-                    routes: routes.clone(),
-                })?;
+            let mut local = true;
+            while local {
+                local = false;
+                let n = routes[r].len();
+                let mut best_delta: i64 = 0;
+                let mut best_ij: Option<(usize, usize)> = None;
+                for i in 0..n - 3 {
+                    for j in i + 2..n - 1 {
+                        let a = routes[r][i];
+                        let b = routes[r][i + 1];
+                        let c = routes[r][j];
+                        let d = routes[r][j + 1];
+                        let delta = (dm[a][c] as i64 + dm[b][d] as i64)
+                            - (dm[a][b] as i64 + dm[c][d] as i64);
+                        if delta < best_delta {
+                            let mut cand = routes[r].clone();
+                            cand[i + 1..=j].reverse();
+                            if route_feasible(&cand, dm, st, rt, dt) {
+                                best_delta = delta;
+                                best_ij = Some((i, j));
+                            }
+                        }
+                    }
+                }
+                if let Some((i, j)) = best_ij {
+                    routes[r][i + 1..=j].reverse();
+                    local = true;
+                    improved_any = true;
+                }
             }
         }
-        temp *= cool;
+        if improved_any {
+            save_solution(&Solution { routes: routes.clone() })?;
+        }
     }
 
-    save_solution(&Solution {
-        routes: best_routes,
-    })?;
     Ok(())
 }
+
+
 
