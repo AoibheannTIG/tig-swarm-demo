@@ -1,4 +1,5 @@
 import aiosqlite
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -132,7 +133,6 @@ CREATE INDEX IF NOT EXISTS idx_hyp_agent_target ON hypotheses(agent_id, target_b
 """
 
 DEFAULT_CONFIG = {
-    "admin_key": "ads-2026",
     # Swarm-wide configuration written by the setup wizard via
     # POST /api/swarm_config and read by every clone via GET /api/swarm_config.
     # The defaults below are pre-wizard placeholders — `python setup.py init`
@@ -227,6 +227,14 @@ async def init_db() -> None:
                 "INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)",
                 (key, value),
             )
+        # Seed a random admin_key on first init only. Subsequent restarts
+        # leave the existing key alone (INSERT OR IGNORE). The wizard
+        # overwrites it with whatever the operator chose via the
+        # POST /api/swarm_config push.
+        await db.execute(
+            "INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)",
+            ("admin_key", secrets.token_urlsafe(16)),
+        )
         await db.commit()
 
 

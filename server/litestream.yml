@@ -1,0 +1,30 @@
+# Litestream config — streams swarm.db to an S3-compatible bucket (Cloudflare R2,
+# Backblaze B2, AWS S3, MinIO, …). All values come from env vars so the same
+# image works for any deployment.
+#
+# Required env vars (set in Railway / your platform's dashboard):
+#   LITESTREAM_BUCKET             e.g. "tig-swarm-backup"
+#   LITESTREAM_ENDPOINT           e.g. "https://<account-id>.r2.cloudflarestorage.com"
+#   LITESTREAM_ACCESS_KEY_ID      R2/S3 access key
+#   LITESTREAM_SECRET_ACCESS_KEY  R2/S3 secret
+#
+# Optional:
+#   DATA_DIR                      defaults to /data on Railway, /app locally
+#
+# Restore (one-shot, run inside the container):
+#   litestream restore -o /data/swarm.db.restored s3://${LITESTREAM_BUCKET}/swarm
+
+dbs:
+  - path: ${DATA_DIR}/swarm.db
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_BUCKET}
+        path: swarm
+        endpoint: ${LITESTREAM_ENDPOINT}
+        region: auto
+        access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+        # Snapshot every hour, keep 24 → ~1 day of point-in-time recovery.
+        # WAL frames stream continuously between snapshots, so RPO is seconds.
+        snapshot-interval: 1h
+        retention: 24h
