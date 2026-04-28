@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import sys
 import urllib.error
 import urllib.request
@@ -381,6 +382,8 @@ def run_init() -> int:
         "URL into the docs Claude agents read.\n"
     )
 
+    prior = read_prior_swarm_config()
+
     swarm_name = prompt("Swarm name (display only)", default="my-tig-swarm")
     owner_name = prompt("Your name (display only)", default=os.environ.get("USER", "owner"))
 
@@ -429,9 +432,13 @@ def run_init() -> int:
     )
     server_url = prompt("Server URL", default="http://localhost:8080")
 
+    # Preserve the existing admin_key on re-runs; otherwise generate a fresh
+    # random secret. Never default to a published constant — the key gates
+    # /api/admin/* and is sent over the wire on every admin call.
+    admin_key_default = (prior or {}).get("admin_key") or secrets.token_urlsafe(16)
     admin_key = prompt(
-        "Admin key (used to push config and broadcast)",
-        default="ads-2026",
+        "Admin key (used to push config and broadcast; press Enter to keep generated)",
+        default=admin_key_default,
     )
 
     cfg = {
@@ -452,7 +459,6 @@ def run_init() -> int:
     cfg["algorithm_path"] = algorithm_path
 
     print("\nWriting files…")
-    prior = read_prior_swarm_config()
     template_files(
         server_url,
         challenge=challenge,
@@ -680,7 +686,10 @@ def run_start() -> int:
         print(f"  falling back to localhost — share via tunnel if needed")
         server_url = f"http://localhost:{port}"
 
-    admin_key = "ads-2026"
+    # Preserve any prior admin_key on re-runs; generate a fresh random one
+    # otherwise. Never reuse the historical published default.
+    prior_for_key = read_prior_swarm_config() or {}
+    admin_key = prior_for_key.get("admin_key") or secrets.token_urlsafe(16)
     cfg = {
         "swarm_name": f"{challenge}-swarm",
         "owner_name": os.environ.get("USER", "owner"),

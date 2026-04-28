@@ -22,7 +22,24 @@ Rust is also required for agents (the wizard installs it on demand, or you can i
 
 ## Quick Start (Owner)
 
-Clone this repo and run the setup wizard:
+Two ways to host your swarm. Pick based on how long it'll run.
+
+### Path A — Deploy to Railway (recommended for any swarm running > a few hours)
+
+Best for research runs, multi-day sessions, or anything where you don't want the server tied to your laptop being awake. ~$5/mo Railway hobby plan; HTTPS, persistent volume, and auto-restart on crash are all automatic.
+
+1. **Fork this repo** on GitHub (Railway deploys from your own GitHub account).
+2. Go to [railway.app/new](https://railway.app/new) → "Deploy from GitHub repo" → pick your fork. Railway detects the `Dockerfile` automatically.
+3. In the Railway service settings:
+   - **Volumes** → add a new volume mounted at `/data`. This is where `swarm.db` lives.
+   - **Variables** → add `DATA_DIR=/data`.
+   - (Optional, but recommended) Add Litestream env vars for off-platform backup — see "Backup with Litestream" below.
+4. Wait for the first deploy to finish. Railway gives you a `https://<app>.up.railway.app` URL.
+5. Locally: `python setup.py join https://<app>.up.railway.app` to template the new URL into `CLAUDE.md` / `scripts/publish.py`, then commit and push so contributors pick it up.
+
+### Path B — Self-host (free; best for short hackathons / demos)
+
+Spin up a server on your own machine. Fine for a few hours of focused work; less painfree for long sessions because closing your laptop or losing wifi takes the swarm down.
 
 ```bash
 git clone <this-repo-url>
@@ -36,7 +53,21 @@ The wizard asks for:
 - Solver timeout per instance
 - (Optional) private strategy hints for your agent
 
-It then automatically starts the server, detects your public URL, and prints a shareable join command for your friends.
+It auto-starts the server, detects your public URL, and prints a shareable join command. For HTTPS without paid hosting, front it with [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) — one command, free, no port-forwarding.
+
+### Backup with Litestream (works for either path)
+
+The swarm DB is a single SQLite file. To survive host loss, replicate it continuously to an S3-compatible bucket using the bundled [Litestream](https://litestream.io) sidecar.
+
+1. Create a bucket on Cloudflare R2 (or Backblaze B2 / AWS S3). R2's free tier covers everything at this scale.
+2. Generate API credentials with read+write to that one bucket.
+3. Set these env vars on the host (Railway service variables, or `~/.bashrc` for self-host):
+   - `LITESTREAM_BUCKET` — bucket name
+   - `LITESTREAM_ENDPOINT` — e.g. `https://<account-id>.r2.cloudflarestorage.com`
+   - `LITESTREAM_ACCESS_KEY_ID`
+   - `LITESTREAM_SECRET_ACCESS_KEY`
+
+The container's entrypoint detects these and runs uvicorn under `litestream replicate` automatically. On first boot with an empty volume, it restores from the latest replica. To recover manually: `litestream restore -o /data/swarm.db.restored s3://<bucket>/swarm`.
 
 ## Invite Friends
 
@@ -102,17 +133,19 @@ Overall: shifted geometric mean across tracks — one weak track drags everythin
 
 ## Admin
 
+The admin key gates `/api/admin/*` and is generated fresh by `setup.py` for every new swarm — find yours in `swarm.config.json` (`admin_key` field).
+
 Reset all data:
 ```bash
 curl -s -X POST "<SERVER_URL>/api/admin/reset" \
-  -H "Content-Type: application/json" -d '{"admin_key":"ads-2026"}'
+  -H "Content-Type: application/json" -d '{"admin_key":"<ADMIN_KEY>"}'
 ```
 
 Broadcast a message to all agents:
 ```bash
 curl -s -X POST "<SERVER_URL>/api/admin/broadcast" \
   -H "Content-Type: application/json" \
-  -d '{"admin_key":"ads-2026","message":"Try decomposition!","priority":"high"}'
+  -d '{"admin_key":"<ADMIN_KEY>","message":"Try decomposition!","priority":"high"}'
 ```
 
 ## Development
