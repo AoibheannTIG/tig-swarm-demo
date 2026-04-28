@@ -227,14 +227,24 @@ async def init_db() -> None:
                 "INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)",
                 (key, value),
             )
-        # Seed a random admin_key on first init only. Subsequent restarts
-        # leave the existing key alone (INSERT OR IGNORE). The wizard
-        # overwrites it with whatever the operator chose via the
-        # POST /api/swarm_config push.
-        await db.execute(
-            "INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)",
-            ("admin_key", secrets.token_urlsafe(16)),
-        )
+        # Admin key resolution, in priority order:
+        #   1. ADMIN_KEY env var — wins every boot, ideal for hosted deploys
+        #      (Railway/Fly/etc) so the operator owns the key out-of-band.
+        #   2. Existing value in the config table — preserves the key across
+        #      restarts when no env var is set.
+        #   3. A freshly-generated random key — only used on the very first
+        #      boot of a fresh DB with no env override.
+        env_key = os.environ.get("ADMIN_KEY")
+        if env_key:
+            await db.execute(
+                "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                ("admin_key", env_key),
+            )
+        else:
+            await db.execute(
+                "INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)",
+                ("admin_key", secrets.token_urlsafe(16)),
+            )
         await db.commit()
 
 
