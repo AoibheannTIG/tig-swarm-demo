@@ -11,11 +11,13 @@ import { initWelcome, toggleWelcome } from "./lib/welcome";
 import { startReplay } from "./lib/replay";
 import {
   loadSwarmConfig,
+  getSwarmConfig,
   handleWsEvent as handleSwarmConfigEvent,
 } from "./lib/swarmConfig";
 
 import { StatsPanel } from "./panels/stats";
 import { RoutesPanel } from "./panels/routes";
+import { GanttPanel } from "./panels/gantt";
 import { ChartPanel } from "./panels/chart";
 import { DiversityPanel } from "./panels/diversity";
 import { FeedPanel } from "./panels/feed";
@@ -61,7 +63,12 @@ function initPanel(PanelClass: new () => Panel, containerId: string) {
 
 function constructPanels() {
   initPanel(StatsPanel, "panel-stats");
-  initPanel(RoutesPanel, "panel-routes");
+  const challenge = getSwarmConfig().challenge;
+  if (challenge === "job_scheduling") {
+    initPanel(GanttPanel, "panel-routes");
+  } else {
+    initPanel(RoutesPanel, "panel-routes");
+  }
   chartPanel = initPanel(ChartPanel, "panel-chart") as ChartPanel;
   initPanel(DiversityPanel, "panel-diversity");
   initPanel(FeedPanel, "panel-feed");
@@ -225,6 +232,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "2") window.location.href = "/ideas.html";
   if (e.key === "3") window.location.href = "/diversity.html";
   if (e.key === "4") window.location.href = "/benchmark.html";
+  if (e.key === "5") window.location.href = "/trajectories.html";
   if (e.key === "j" || e.key === "J") toggleWelcome();
   if (e.key === "r" || e.key === "R") startReplay(getApiUrl(), handleMessage);
 });

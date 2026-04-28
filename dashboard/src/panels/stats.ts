@@ -18,6 +18,7 @@ export class StatsPanel implements Panel {
           <a href="/ideas.html" class="stats-nav-link">Ideas &rarr;</a>
           <a href="/diversity.html" class="stats-nav-link">Diversity &rarr;</a>
           <a href="/benchmark.html" class="stats-nav-link">Benchmark &rarr;</a>
+          <a href="/trajectories.html" class="stats-nav-link">Trajectories &rarr;</a>
         </div>
         <div class="stats-chips">
           <div class="stat-chip" id="stat-agents">

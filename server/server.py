@@ -352,15 +352,34 @@ async def get_state(agent_id: str | None = None, feed_per_agent: int = 5):
 
             # ── Trajectory reset on stagnation_limit ──
             trajectory_reset = None
-            stagnation_limit = int(config.get("stagnation_limit", "0"))
+            stagnation_limit = int(config.get("stagnation_limit", "10"))
             if stagnation_limit > 0 and runs_since >= stagnation_limit and my_best is not None:
                 timestamp = now()
+                # Deactivate the current trajectory
+                cur_traj_id = None
+                cur_traj_row = await conn.execute(
+                    "SELECT current_trajectory_id FROM agents WHERE id = ?",
+                    (agent_id,),
+                )
+                cur_traj = await cur_traj_row.fetchone()
+                if cur_traj and cur_traj["current_trajectory_id"]:
+                    cur_traj_id = cur_traj["current_trajectory_id"]
+                    await db.deactivate_trajectory(conn, cur_traj_id, timestamp)
+
                 await db.deposit_inactive(
                     conn, agent_id, my_best["algorithm_code"],
                     my_best["score"], timestamp,
                 )
+                # Tag the inactive algorithm with its trajectory
+                if cur_traj_id:
+                    await conn.execute(
+                        "UPDATE inactive_algorithms SET trajectory_id = ? "
+                        "WHERE agent_id = ? AND deposited_at = ?",
+                        (cur_traj_id, agent_id, timestamp),
+                    )
                 n_inactive = await db.count_inactive(conn)
                 # Uniform pick: 1/(n_inactive+1) for fresh, 1/(n_inactive+1) for each inactive
+                new_traj_id = None
                 if random.randint(0, n_inactive) == 0:
                     new_code = load_seed_for(config.get("challenge", "vehicle_routing"))
                     trajectory_reset = {"type": "fresh_start"}
@@ -373,14 +392,20 @@ async def get_state(agent_id: str | None = None, feed_per_agent: int = 5):
                             "type": "adopted_inactive",
                             "prior_score": picked["score"],
                         }
+                        # Reactivate the adopted trajectory
+                        if picked.get("trajectory_id"):
+                            new_traj_id = picked["trajectory_id"]
+                            await db.reactivate_trajectory(conn, new_traj_id)
+                            await db.increment_trajectory_agents(conn, new_traj_id)
                     else:
                         new_code = load_seed_for(config.get("challenge", "vehicle_routing"))
                         trajectory_reset = {"type": "fresh_start"}
+
                 await db.clear_agent_best(conn, agent_id)
                 await conn.execute(
                     "UPDATE agents SET runs_since_improvement = 0, "
-                    "best_score = NULL WHERE id = ?",
-                    (agent_id,),
+                    "best_score = NULL, current_trajectory_id = ? WHERE id = ?",
+                    (new_traj_id, agent_id),
                 )
                 await conn.execute(
                     "DELETE FROM hypotheses WHERE agent_id = ?",
@@ -461,6 +486,17 @@ async def get_state(agent_id: str | None = None, feed_per_agent: int = 5):
             n_stagnation = int(config.get("stagnation_threshold", "2"))
             if trajectory_reset is None and runs_since >= n_stagnation:
                 stagnation_hint = random.choice(["tacit_knowledge", "inspiration"])
+                if stagnation_hint == "tacit_knowledge":
+                    await conn.execute(
+                        "UPDATE agents SET tacit_knowledge_count = tacit_knowledge_count + 1 WHERE id = ?",
+                        (agent_id,),
+                    )
+                else:
+                    await conn.execute(
+                        "UPDATE agents SET inspiration_count = inspiration_count + 1 WHERE id = ?",
+                        (agent_id,),
+                    )
+                await conn.commit()
                 all_bests = await db.list_agent_bests(conn, direction=direction)
                 cutoff_ts = inactive_cutoff()
                 cursor = await conn.execute(
@@ -634,37 +670,66 @@ async def create_iteration(req: IterationCreate):
                 improvement_pct(prev_agent_best["score"], req.score, direction), 6
             )
 
+        # ── Trajectory tracking ──
+        traj_cursor = await conn.execute(
+            "SELECT current_trajectory_id FROM agents WHERE id = ?",
+            (req.agent_id,),
+        )
+        traj_row = await traj_cursor.fetchone()
+        trajectory_id = traj_row["current_trajectory_id"] if traj_row else None
+        if not trajectory_id:
+            trajectory_id = new_id()
+            await db.create_trajectory(
+                conn, trajectory_id, timestamp,
+                current_score=req.score if beats_own_best else None,
+            )
+            await conn.execute(
+                "UPDATE agents SET current_trajectory_id = ?, "
+                "num_trajectories = num_trajectories + 1 WHERE id = ?",
+                (trajectory_id, req.agent_id),
+            )
+
         await conn.execute(
             """INSERT INTO experiments
                (id, agent_id, hypothesis_id, algorithm_code, score, feasible,
                 num_vehicles, total_distance, notes, route_data,
                 delta_vs_best_pct, delta_vs_own_best_pct, beats_own_best,
-                created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                trajectory_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (exp_id, req.agent_id, hyp_id, req.algorithm_code, req.score,
              1 if req.feasible else 0, req.num_vehicles, req.total_distance,
              req.notes, route_data_json,
              delta_vs_best_pct, delta_vs_own_best_pct,
              1 if beats_own_best else 0,
-             timestamp),
+             trajectory_id, timestamp),
+        )
+
+        await db.update_trajectory_after_edit(
+            conn, trajectory_id, beats_own_best,
+            new_score=req.score if beats_own_best else None,
         )
 
         if beats_own_best:
             await conn.execute(
-                """UPDATE agents SET
+                f"""UPDATE agents SET
                     experiments_completed = experiments_completed + 1,
                     runs_since_improvement = 0,
                     improvements = improvements + 1,
-                    best_score = ?
+                    best_score = ?,
+                    best_ever_score = CASE
+                        WHEN best_ever_score IS NULL THEN ?
+                        WHEN ? {('>' if direction == 'max' else '<')} best_ever_score THEN ?
+                        ELSE best_ever_score
+                    END
                    WHERE id = ?""",
-                (req.score, req.agent_id),
+                (req.score, req.score, req.score, req.score, req.agent_id),
             )
             await db.upsert_agent_best(
                 conn, agent_id=req.agent_id, experiment_id=exp_id,
                 algorithm_code=req.algorithm_code, score=req.score,
                 feasible=req.feasible, num_vehicles=req.num_vehicles,
                 total_distance=req.total_distance, route_data=route_data_json,
-                updated_at=timestamp,
+                updated_at=timestamp, trajectory_id=trajectory_id,
             )
         else:
             await conn.execute(
@@ -890,13 +955,18 @@ async def create_experiment(req: ExperimentCreate):
 
         if beats_own_best:
             await conn.execute(
-                """UPDATE agents SET
+                f"""UPDATE agents SET
                     experiments_completed = experiments_completed + 1,
                     runs_since_improvement = 0,
                     improvements = improvements + 1,
-                    best_score = ?
+                    best_score = ?,
+                    best_ever_score = CASE
+                        WHEN best_ever_score IS NULL THEN ?
+                        WHEN ? {('>' if direction == 'max' else '<')} best_ever_score THEN ?
+                        ELSE best_ever_score
+                    END
                    WHERE id = ?""",
-                (req.score, req.agent_id),
+                (req.score, req.score, req.score, req.score, req.agent_id),
             )
             await db.upsert_agent_best(
                 conn,
@@ -1207,6 +1277,41 @@ async def get_agent_experiments(agent_id: str):
     }
 
 
+# ── Trajectories ──
+
+@app.get("/api/trajectories")
+async def get_trajectories():
+    direction = await get_direction()
+    async with db.connect() as conn:
+        trajectories = await db.list_trajectories(conn)
+        result = []
+        for t in trajectories:
+            history = await db.get_trajectory_score_history(
+                conn, t["id"], direction
+            )
+            result.append({
+                "id": t["id"],
+                "started_at": t["started_at"],
+                "status": t["status"],
+                "current_score": t["current_score"],
+                "num_edits": t["num_edits"],
+                "num_improvements": t["num_improvements"],
+                "momentum": round(t["momentum"], 4) if t["momentum"] else 0,
+                "num_agents": t["num_agents"],
+                "edits_since_improvement": t["edits_since_improvement"] or 0,
+                "deactivated_at": t["deactivated_at"],
+                "score_history": history,
+            })
+        active = sum(1 for t in result if t["status"] == "active")
+        inactive = sum(1 for t in result if t["status"] == "inactive")
+    return {
+        "total": len(result),
+        "active": active,
+        "inactive": inactive,
+        "trajectories": result,
+    }
+
+
 # ── Admin endpoints ──
 
 @app.post("/api/admin/broadcast")
@@ -1276,9 +1381,9 @@ async def get_swarm_config():
     except Exception:
         stagnation_threshold = 2
     try:
-        stagnation_limit = int(config.get("stagnation_limit", "0"))
+        stagnation_limit = int(config.get("stagnation_limit", "10"))
     except Exception:
-        stagnation_limit = 0
+        stagnation_limit = 10
     return {
         "challenge": config.get("challenge", "vehicle_routing"),
         "tracks": tracks,

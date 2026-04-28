@@ -229,7 +229,7 @@ def push_config_to_server(server_url: str, admin_key: str, cfg: dict) -> None:
         "swarm_name": cfg.get("swarm_name", ""),
         "owner_name": cfg.get("owner_name", ""),
         "stagnation_threshold": cfg.get("stagnation_threshold", 2),
-        "stagnation_limit": cfg.get("stagnation_limit", 0),
+        "stagnation_limit": cfg.get("stagnation_limit", 10),
     }
     req = urllib.request.Request(
         f"{server_url.rstrip('/')}/api/swarm_config",
@@ -410,7 +410,7 @@ def run_init() -> int:
 
     stagnation_limit = prompt_int(
         "Stagnation limit (iterations without improvement before trajectory reset, 0=disabled)",
-        0, minimum=0,
+        10, minimum=0,
     )
 
     feed_per_agent = prompt_int(
@@ -620,7 +620,7 @@ def run_start() -> int:
 
     stagnation_limit = prompt_int(
         "Stagnation limit (iterations without improvement before trajectory reset, 0=disabled)",
-        0, minimum=0,
+        10, minimum=0,
     )
 
     feed_per_agent = prompt_int(

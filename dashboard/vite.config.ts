@@ -9,6 +9,7 @@ export default defineConfig({
         ideas: resolve(__dirname, "ideas.html"),
         diversity: resolve(__dirname, "diversity.html"),
         benchmark: resolve(__dirname, "benchmark.html"),
+        trajectories: resolve(__dirname, "trajectories.html"),
       },
     },
   },

@@ -87,7 +87,7 @@ GEOMEAN_SHIFT = QUALITY_CLAMP + 1
 
 # Wizard-baked URL with env-var override; mirrors scripts/publish.py so the
 # two stay in lockstep when the wizard re-runs.
-SERVER = os.environ.get("TIG_SWARM_SERVER") or "${SERVER_URL}"
+SERVER = os.environ.get("TIG_SWARM_SERVER") or "http://157.180.124.158:8080"
 if SERVER.startswith("$"):
     SERVER = ""  # offline mode — read from swarm.config.json instead
 
@@ -239,6 +239,9 @@ def run_instance(
         if challenge == "vehicle_routing":
             from_vrp = _vrp_extras(str(instance_path), sol_path)
             result.update(from_vrp)
+        elif challenge == "job_scheduling":
+            gantt = _jsp_extras(str(instance_path), sol_path)
+            result.update(gantt)
         return result
     finally:
         if os.path.exists(sol_path):
@@ -307,6 +310,106 @@ def _vrp_extras(inst_path: str, sol_path: str) -> dict:
         ],
     }
     return {"num_vehicles": len(routes), "route_data": route_data}
+
+
+# ── Job-scheduling-specific extras (Gantt viz_data) ──────────────
+
+
+def _jsp_parse_solution(sol_path: str) -> list | None:
+    """Decode a job-scheduling solution file (base64 → gzip → bincode)."""
+    import base64
+    import gzip
+    import struct
+
+    try:
+        with open(sol_path) as f:
+            b64_str = json.load(f)
+        if not isinstance(b64_str, str):
+            return None
+        compressed = base64.b64decode(b64_str)
+        data = gzip.decompress(compressed)
+    except Exception:
+        return None
+
+    offset = 0
+
+    def read_u64() -> int:
+        nonlocal offset
+        val = struct.unpack_from("<Q", data, offset)[0]
+        offset += 8
+        return val
+
+    def read_u32() -> int:
+        nonlocal offset
+        val = struct.unpack_from("<I", data, offset)[0]
+        offset += 4
+        return val
+
+    try:
+        num_jobs = read_u64()
+        schedule: list[list[tuple[int, int]]] = []
+        for _ in range(num_jobs):
+            num_ops = read_u64()
+            ops = []
+            for _ in range(num_ops):
+                machine = read_u64()
+                start_time = read_u32()
+                ops.append((machine, start_time))
+            schedule.append(ops)
+        return schedule
+    except struct.error:
+        return None
+
+
+def _jsp_extras(inst_path: str, sol_path: str) -> dict:
+    """Build Gantt chart viz payload from instance + solution files."""
+    schedule = _jsp_parse_solution(sol_path)
+    if schedule is None:
+        return {"gantt_data": None}
+
+    try:
+        with open(inst_path) as f:
+            challenge = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {"gantt_data": None}
+
+    jobs_per_product = challenge["jobs_per_product"]
+    proc_times = challenge["product_processing_times"]
+
+    bars = []
+    job_idx = 0
+    makespan = 0
+    for product_idx, n_jobs in enumerate(jobs_per_product):
+        for _ in range(n_jobs):
+            if job_idx >= len(schedule):
+                break
+            ops = schedule[job_idx]
+            product_ops = proc_times[product_idx]
+            for op_idx, (machine, start_time) in enumerate(ops):
+                if op_idx < len(product_ops):
+                    duration = product_ops[op_idx].get(str(machine), 0)
+                else:
+                    duration = 0
+                end_time = start_time + duration
+                if end_time > makespan:
+                    makespan = end_time
+                bars.append({
+                    "job": job_idx,
+                    "op": op_idx,
+                    "machine": machine,
+                    "start": start_time,
+                    "end": end_time,
+                })
+            job_idx += 1
+
+    return {
+        "gantt_data": {
+            "num_machines": challenge["num_machines"],
+            "num_jobs": challenge["num_jobs"],
+            "makespan": makespan,
+            "bars": bars,
+        }
+    }
 
 
 # ── Aggregation & main ────────────────────────────────────────────
@@ -419,12 +522,17 @@ def main() -> int:
         out["total_distance"] = sum(r["score"] for r in results if r.get("feasible"))
         out["route_data"] = all_routes or None
         out["viz_data"] = all_routes or None  # generic alias for non-VRP dashboards
+    elif challenge == "job_scheduling":
+        all_gantt = {
+            r["instance"]: r["gantt_data"]
+            for r in results
+            if r.get("gantt_data")
+        }
+        out["viz_data"] = all_gantt or None
+        out["num_vehicles"] = 0
+        out["total_distance"] = out["score"]
     else:
-        # Other challenges leave viz_data null until per-challenge dashboard
-        # work in Phase 4 wires up SAT/knapsack/JSP/energy visualizations.
         out["viz_data"] = None
-        # publish.py expects num_vehicles + total_distance (legacy schema).
-        # Fill harmless defaults so the schema doesn't reject the payload.
         out["num_vehicles"] = 0
         out["total_distance"] = out["score"]
 

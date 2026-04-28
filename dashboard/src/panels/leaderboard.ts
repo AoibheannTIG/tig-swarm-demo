@@ -1,22 +1,32 @@
 import type { Panel, WSMessage, LeaderboardEntry } from "../types";
 import { getAgentColor } from "../lib/colors";
 
-type SortKey = "best_score" | "runs" | "improvements" | "runs_since_improvement";
+type SortKey =
+  | "current_score"
+  | "best_ever_score"
+  | "runs"
+  | "improvements"
+  | "runs_since_improvement"
+  | "num_trajectories"
+  | "tacit_knowledge_count"
+  | "inspiration_count";
 type SortDir = "asc" | "desc";
 
-// Default sort when a column is first clicked: descending for score (higher
-// is better), runs, and improvements; ascending for stagnation (lower is better).
 const DEFAULT_DIR: Record<SortKey, SortDir> = {
-  best_score: "desc",
+  current_score: "desc",
+  best_ever_score: "desc",
   runs: "desc",
   improvements: "desc",
   runs_since_improvement: "asc",
+  num_trajectories: "desc",
+  tacit_knowledge_count: "desc",
+  inspiration_count: "desc",
 };
 
 export class LeaderboardPanel implements Panel {
   private list!: HTMLElement;
   private currentEntries: LeaderboardEntry[] = [];
-  private sortKey: SortKey = "best_score";
+  private sortKey: SortKey = "current_score";
   private sortDir: SortDir = "desc";
 
   init(container: HTMLElement) {
@@ -26,10 +36,14 @@ export class LeaderboardPanel implements Panel {
         <div class="leaderboard-header">
           <span class="lb-rank">#</span>
           <span class="lb-name">Agent</span>
-          <button type="button" class="lb-runs lb-sortable" data-sort="runs">Runs<span class="lb-arrow"></span></button>
-          <button type="button" class="lb-imp lb-sortable" data-sort="improvements">Imp.<span class="lb-arrow"></span></button>
-          <button type="button" class="lb-stag lb-sortable" data-sort="runs_since_improvement">Stag.<span class="lb-arrow"></span></button>
-          <button type="button" class="lb-score lb-sortable" data-sort="best_score">Best score<span class="lb-arrow"></span></button>
+          <button type="button" class="lb-col-sm lb-sortable" data-sort="runs">Runs<span class="lb-arrow"></span></button>
+          <button type="button" class="lb-col-sm lb-sortable" data-sort="improvements">Imp<span class="lb-arrow"></span></button>
+          <button type="button" class="lb-col-sm lb-sortable" data-sort="runs_since_improvement">Stag<span class="lb-arrow"></span></button>
+          <button type="button" class="lb-score lb-sortable" data-sort="current_score">Score<span class="lb-arrow"></span></button>
+          <button type="button" class="lb-score lb-sortable" data-sort="best_ever_score">Best<span class="lb-arrow"></span></button>
+          <button type="button" class="lb-col-sm lb-sortable" data-sort="num_trajectories">Traj<span class="lb-arrow"></span></button>
+          <button type="button" class="lb-col-sm lb-sortable" data-sort="tacit_knowledge_count" title="Tacit knowledge reads">TK<span class="lb-arrow"></span></button>
+          <button type="button" class="lb-col-sm lb-sortable" data-sort="inspiration_count" title="Inspiration reads">Insp<span class="lb-arrow"></span></button>
         </div>
         <div class="leaderboard-list" id="leaderboard-list"></div>
       </div>
@@ -79,7 +93,6 @@ export class LeaderboardPanel implements Panel {
     sorted.sort((a, b) => {
       const av = a[this.sortKey];
       const bv = b[this.sortKey];
-      // Nulls (no runs yet) always sink to the bottom regardless of direction.
       if (av === null && bv === null) return 0;
       if (av === null) return 1;
       if (bv === null) return -1;
@@ -91,16 +104,12 @@ export class LeaderboardPanel implements Panel {
   private render() {
     this.updateHeaderIndicators();
 
-    // Record first positions for FLIP animation
     const firstRects = new Map<string, DOMRect>();
     Array.from(this.list.children).forEach((child) => {
       const el = child as HTMLElement;
       firstRects.set(el.dataset.agentId || "", el.getBoundingClientRect());
     });
 
-    // Track previous displayed score per agent so we can highlight improvements
-    // (improvement = the value in the *currently sorted column* moved in the
-    // "better" direction, which is whatever DEFAULT_DIR considers good).
     const prevValues = new Map<string, number | null>();
     this.list.childNodes.forEach((node) => {
       const el = node as HTMLElement;
@@ -129,7 +138,9 @@ export class LeaderboardPanel implements Panel {
         ((goodDir === "asc" && (sortVal as number) < prev) ||
          (goodDir === "desc" && (sortVal as number) > prev));
 
-      const scoreText = entry.best_score === null ? "—" : entry.best_score.toFixed(1);
+      const curText = entry.current_score === null ? "—" : entry.current_score.toFixed(1);
+      const bestText = entry.best_ever_score === null ? "—" : entry.best_ever_score.toFixed(1);
+      const scoreImproved = improved && (this.sortKey === "current_score" || this.sortKey === "best_ever_score");
 
       row.innerHTML = `
         <span class="lb-rank">${rank}</span>
@@ -137,10 +148,14 @@ export class LeaderboardPanel implements Panel {
           <span class="lb-dot" style="background:${color}"></span>
           ${entry.agent_name}
         </span>
-        <span class="lb-runs">${entry.runs}</span>
-        <span class="lb-imp">${entry.improvements}</span>
-        <span class="lb-stag${entry.runs_since_improvement >= 2 ? " lb-stag--alert" : ""}">${entry.runs_since_improvement}</span>
-        <span class="lb-score ${improved ? "lb-score--improved" : ""}">${scoreText}</span>
+        <span class="lb-col-sm">${entry.runs}</span>
+        <span class="lb-col-sm">${entry.improvements}</span>
+        <span class="lb-col-sm${entry.runs_since_improvement >= 2 ? " lb-stag--alert" : ""}">${entry.runs_since_improvement}</span>
+        <span class="lb-score ${scoreImproved && this.sortKey === "current_score" ? "lb-score--improved" : ""}">${curText}</span>
+        <span class="lb-score ${scoreImproved && this.sortKey === "best_ever_score" ? "lb-score--improved" : ""}">${bestText}</span>
+        <span class="lb-col-sm">${entry.num_trajectories}</span>
+        <span class="lb-col-sm">${entry.tacit_knowledge_count}</span>
+        <span class="lb-col-sm">${entry.inspiration_count}</span>
       `;
 
       this.list.appendChild(row);

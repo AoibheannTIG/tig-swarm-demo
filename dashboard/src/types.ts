@@ -24,9 +24,11 @@ export interface LeaderboardEntry {
   runs: number;
   improvements: number;
   runs_since_improvement: number;
-  // Best per-instance score the agent has achieved across feasible runs.
-  // null when the agent has no feasible runs yet.
-  best_score: number | null;
+  current_score: number | null;
+  best_ever_score: number | null;
+  num_trajectories: number;
+  tacit_knowledge_count: number;
+  inspiration_count: number;
   active: boolean;
 }
 

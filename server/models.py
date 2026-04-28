@@ -118,7 +118,7 @@ class SwarmConfigUpdate(AdminAuth):
     swarm_name: str = ""
     owner_name: str = ""
     stagnation_threshold: int = 2
-    stagnation_limit: int = 0
+    stagnation_limit: int = 10
 
 
 class MessageCreate(BaseModel):

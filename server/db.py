@@ -17,7 +17,11 @@ CREATE TABLE IF NOT EXISTS agents (
     experiments_completed INTEGER DEFAULT 0,
     best_score REAL,
     runs_since_improvement INTEGER DEFAULT 0,
-    improvements INTEGER DEFAULT 0
+    improvements INTEGER DEFAULT 0,
+    best_ever_score REAL,
+    num_trajectories INTEGER DEFAULT 0,
+    tacit_knowledge_count INTEGER DEFAULT 0,
+    inspiration_count INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS hypotheses (
@@ -96,7 +100,21 @@ CREATE TABLE IF NOT EXISTS inactive_algorithms (
     algorithm_code TEXT NOT NULL,
     score REAL,
     deposited_at TEXT NOT NULL,
+    trajectory_id TEXT,
     FOREIGN KEY (agent_id) REFERENCES agents(id)
+);
+
+CREATE TABLE IF NOT EXISTS trajectories (
+    id TEXT PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    status TEXT DEFAULT 'active',
+    current_score REAL,
+    num_edits INTEGER DEFAULT 0,
+    num_improvements INTEGER DEFAULT 0,
+    momentum REAL DEFAULT 0.0,
+    num_agents INTEGER DEFAULT 1,
+    deactivated_at TEXT,
+    edits_since_improvement INTEGER DEFAULT 0
 );
 """
 
@@ -149,6 +167,15 @@ async def init_db() -> None:
             "ALTER TABLE experiments ADD COLUMN delta_vs_best_pct REAL",
             "ALTER TABLE experiments ADD COLUMN delta_vs_own_best_pct REAL",
             "ALTER TABLE experiments ADD COLUMN beats_own_best INTEGER DEFAULT 0",
+            "ALTER TABLE experiments ADD COLUMN trajectory_id TEXT",
+            "ALTER TABLE agent_bests ADD COLUMN trajectory_id TEXT",
+            "ALTER TABLE agents ADD COLUMN current_trajectory_id TEXT",
+            "ALTER TABLE inactive_algorithms ADD COLUMN trajectory_id TEXT",
+            "ALTER TABLE trajectories ADD COLUMN edits_since_improvement INTEGER DEFAULT 0",
+            "ALTER TABLE agents ADD COLUMN best_ever_score REAL",
+            "ALTER TABLE agents ADD COLUMN num_trajectories INTEGER DEFAULT 0",
+            "ALTER TABLE agents ADD COLUMN tacit_knowledge_count INTEGER DEFAULT 0",
+            "ALTER TABLE agents ADD COLUMN inspiration_count INTEGER DEFAULT 0",
         ):
             try:
                 await db.execute(stmt)
@@ -274,12 +301,13 @@ async def upsert_agent_best(
     total_distance: float,
     route_data: str | None,
     updated_at: str,
+    trajectory_id: str | None = None,
 ) -> None:
     await conn.execute(
         """INSERT INTO agent_bests
            (agent_id, experiment_id, algorithm_code, score, feasible,
-            num_vehicles, total_distance, route_data, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            num_vehicles, total_distance, route_data, updated_at, trajectory_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(agent_id) DO UPDATE SET
              experiment_id = excluded.experiment_id,
              algorithm_code = excluded.algorithm_code,
@@ -288,10 +316,11 @@ async def upsert_agent_best(
              num_vehicles = excluded.num_vehicles,
              total_distance = excluded.total_distance,
              route_data = excluded.route_data,
-             updated_at = excluded.updated_at""",
+             updated_at = excluded.updated_at,
+             trajectory_id = excluded.trajectory_id""",
         (agent_id, experiment_id, algorithm_code, score,
          1 if feasible else 0, num_vehicles, total_distance,
-         route_data, updated_at),
+         route_data, updated_at, trajectory_id),
     )
 
 
@@ -364,10 +393,14 @@ async def compute_leaderboard(
             a.improvements as improvements,
             a.runs_since_improvement as runs_since_improvement,
             a.last_heartbeat as last_heartbeat,
-            ab.score as best_score
+            a.best_ever_score as best_ever_score,
+            a.num_trajectories as num_trajectories,
+            a.tacit_knowledge_count as tacit_knowledge_count,
+            a.inspiration_count as inspiration_count,
+            ab.score as current_score
         FROM agents a
         LEFT JOIN agent_bests ab ON ab.agent_id = a.id AND ab.feasible = 1
-        ORDER BY best_score IS NULL, best_score {order}, a.name ASC
+        ORDER BY current_score IS NULL, current_score {order}, a.name ASC
         """
     )
     rows = await cursor.fetchall()
@@ -379,7 +412,11 @@ async def compute_leaderboard(
             "runs": row["runs"],
             "improvements": row["improvements"],
             "runs_since_improvement": row["runs_since_improvement"],
-            "best_score": row["best_score"],
+            "current_score": row["current_score"],
+            "best_ever_score": row["best_ever_score"],
+            "num_trajectories": row["num_trajectories"] or 0,
+            "tacit_knowledge_count": row["tacit_knowledge_count"] or 0,
+            "inspiration_count": row["inspiration_count"] or 0,
             "active": row["last_heartbeat"] >= inactive_cutoff if inactive_cutoff and row["last_heartbeat"] else False,
         }
         for i, row in enumerate(rows)
@@ -427,3 +464,104 @@ async def clear_agent_best(conn: aiosqlite.Connection, agent_id: str) -> None:
     await conn.execute(
         "DELETE FROM agent_bests WHERE agent_id = ?", (agent_id,)
     )
+
+
+# ── Trajectory helpers ──
+
+
+async def create_trajectory(
+    conn: aiosqlite.Connection,
+    trajectory_id: str,
+    started_at: str,
+    current_score: float | None = None,
+    num_agents: int = 1,
+) -> None:
+    await conn.execute(
+        "INSERT INTO trajectories (id, started_at, status, current_score, num_agents) "
+        "VALUES (?, ?, 'active', ?, ?)",
+        (trajectory_id, started_at, current_score, num_agents),
+    )
+
+
+async def deactivate_trajectory(
+    conn: aiosqlite.Connection, trajectory_id: str, deactivated_at: str
+) -> None:
+    await conn.execute(
+        "UPDATE trajectories SET status = 'inactive', deactivated_at = ? WHERE id = ?",
+        (deactivated_at, trajectory_id),
+    )
+
+
+async def reactivate_trajectory(
+    conn: aiosqlite.Connection, trajectory_id: str
+) -> None:
+    await conn.execute(
+        "UPDATE trajectories SET status = 'active', deactivated_at = NULL WHERE id = ?",
+        (trajectory_id,),
+    )
+
+
+async def update_trajectory_after_edit(
+    conn: aiosqlite.Connection,
+    trajectory_id: str,
+    improved: bool,
+    new_score: float | None = None,
+) -> None:
+    if improved and new_score is not None:
+        await conn.execute(
+            "UPDATE trajectories SET "
+            "  num_edits = num_edits + 1, "
+            "  num_improvements = num_improvements + 1, "
+            "  momentum = momentum * 0.75 + 1, "
+            "  current_score = ?, "
+            "  edits_since_improvement = 0 "
+            "WHERE id = ?",
+            (new_score, trajectory_id),
+        )
+    else:
+        await conn.execute(
+            "UPDATE trajectories SET "
+            "  num_edits = num_edits + 1, "
+            "  momentum = momentum * 0.75, "
+            "  edits_since_improvement = edits_since_improvement + 1 "
+            "WHERE id = ?",
+            (trajectory_id,),
+        )
+
+
+async def increment_trajectory_agents(
+    conn: aiosqlite.Connection, trajectory_id: str
+) -> None:
+    await conn.execute(
+        "UPDATE trajectories SET num_agents = num_agents + 1 WHERE id = ?",
+        (trajectory_id,),
+    )
+
+
+async def list_trajectories(conn: aiosqlite.Connection) -> list[dict]:
+    cursor = await conn.execute(
+        "SELECT * FROM trajectories ORDER BY started_at DESC"
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+async def get_trajectory_score_history(
+    conn: aiosqlite.Connection,
+    trajectory_id: str,
+    direction: str = "max",
+) -> list[dict]:
+    cursor = await conn.execute(
+        "SELECT score, created_at FROM experiments "
+        "WHERE trajectory_id = ? AND feasible = 1 "
+        "ORDER BY created_at",
+        (trajectory_id,),
+    )
+    rows = await cursor.fetchall()
+    steps: list[dict] = []
+    best: float | None = None
+    for row in rows:
+        score = row["score"]
+        if best is None or is_better(direction, score, best):
+            best = score
+            steps.append({"score": score, "created_at": row["created_at"]})
+    return steps

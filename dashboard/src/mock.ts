@@ -229,7 +229,11 @@ export class MockDataGenerator {
           runs: a.experiments,
           improvements: a.improvements,
           runs_since_improvement: 0,
-          best_score: avg,
+          current_score: avg,
+          best_ever_score: avg,
+          num_trajectories: 1,
+          tacit_knowledge_count: 0,
+          inspiration_count: 0,
           active: true,
         }));
 
