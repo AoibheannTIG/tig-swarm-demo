@@ -18,6 +18,8 @@ import {
 import { StatsPanel } from "./panels/stats";
 import { RoutesPanel } from "./panels/routes";
 import { GanttPanel } from "./panels/gantt";
+import { KnapsackPanel } from "./panels/knapsack";
+import { EnergyPanel } from "./panels/energy";
 import { ChartPanel } from "./panels/chart";
 import { DiversityPanel } from "./panels/diversity";
 import { FeedPanel } from "./panels/feed";
@@ -66,6 +68,10 @@ function constructPanels() {
   const challenge = getSwarmConfig().challenge;
   if (challenge === "job_scheduling") {
     initPanel(GanttPanel, "panel-routes");
+  } else if (challenge === "knapsack") {
+    initPanel(KnapsackPanel, "panel-routes");
+  } else if (challenge === "energy_arbitrage") {
+    initPanel(EnergyPanel, "panel-routes");
   } else {
     initPanel(RoutesPanel, "panel-routes");
   }

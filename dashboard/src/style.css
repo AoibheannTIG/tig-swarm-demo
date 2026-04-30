@@ -555,6 +555,89 @@ html, body {
   50% { opacity: 1; }
 }
 
+/* ── Knapsack panel ── */
+.knapsack-panel {
+  display: flex;
+  flex-direction: column;
+  padding: 12px 16px;
+}
+
+.knapsack-agent-name {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  min-height: 15px;
+  margin-bottom: 4px;
+  letter-spacing: 0.02em;
+}
+
+.knapsack-svg-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.knapsack-panel svg {
+  display: block;
+}
+
+.knapsack-value-box {
+  position: absolute;
+  bottom: 16px;
+  left: 20px;
+  text-align: left;
+  z-index: 2;
+}
+
+.knapsack-items-box {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  z-index: 2;
+}
+
+/* ── Energy panel (energy arbitrage) ── */
+.energy-panel {
+  display: flex;
+  flex-direction: column;
+  padding: 12px 16px;
+}
+
+.energy-agent-name {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  min-height: 15px;
+  margin-bottom: 4px;
+  letter-spacing: 0.02em;
+}
+
+.energy-svg-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.energy-panel svg {
+  display: block;
+}
+
+.energy-batteries-box {
+  position: absolute;
+  bottom: 16px;
+  left: 20px;
+  text-align: left;
+  z-index: 2;
+}
+
 /* ── Gantt panel (job scheduling) ── */
 .gantt-panel {
   display: flex;

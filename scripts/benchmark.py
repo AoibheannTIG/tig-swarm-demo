@@ -223,10 +223,13 @@ def run_instance(
             pass  # save_solution may have written a partial; evaluator will judge
         if not os.path.exists(sol_path) or os.path.getsize(sol_path) == 0:
             return {"instance": instance_id, "track": track_key, "error": "no solution saved", "feasible": False}
-        eval_result = subprocess.run(
-            [evaluator, challenge, str(instance_path), sol_path],
-            capture_output=True, text=True, timeout=max(10, timeout),
-        )
+        try:
+            eval_result = subprocess.run(
+                [evaluator, challenge, str(instance_path), sol_path],
+                capture_output=True, text=True, timeout=max(10, timeout),
+            )
+        except subprocess.TimeoutExpired:
+            return {"instance": instance_id, "track": track_key, "error": "evaluator timeout", "feasible": False}
         score, err = parse_evaluator_score(eval_result)
         if err:
             return {"instance": instance_id, "track": track_key, "error": err, "feasible": False}
@@ -242,6 +245,12 @@ def run_instance(
         elif challenge == "job_scheduling":
             gantt = _jsp_extras(str(instance_path), sol_path)
             result.update(gantt)
+        elif challenge == "knapsack":
+            knapsack = _knapsack_extras(str(instance_path), sol_path)
+            result.update(knapsack)
+        elif challenge == "energy_arbitrage":
+            energy = _energy_extras(str(instance_path), sol_path)
+            result.update(energy)
         return result
     finally:
         if os.path.exists(sol_path):
@@ -412,6 +421,184 @@ def _jsp_extras(inst_path: str, sol_path: str) -> dict:
     }
 
 
+# ── Knapsack-specific extras (interaction matrix viz_data) ─────────
+
+
+def _knapsack_parse_solution(sol_path: str) -> list[int] | None:
+    """Decode a knapsack solution file (base64 → gzip → bincode)."""
+    import base64
+    import gzip
+    import struct
+
+    try:
+        with open(sol_path) as f:
+            b64_str = json.load(f)
+        if not isinstance(b64_str, str):
+            return None
+        compressed = base64.b64decode(b64_str)
+        data = gzip.decompress(compressed)
+    except Exception:
+        return None
+
+    offset = 0
+
+    def read_u64() -> int:
+        nonlocal offset
+        val = struct.unpack_from("<Q", data, offset)[0]
+        offset += 8
+        return val
+
+    try:
+        num_items = read_u64()
+        items = [read_u64() for _ in range(num_items)]
+        return items
+    except struct.error:
+        return None
+
+
+def _knapsack_extras(inst_path: str, sol_path: str) -> dict:
+    """Build interaction-matrix viz payload from instance + solution files.
+
+    The matrix sent to the dashboard is K×K where K = len(selected items),
+    capped at MAX_VIZ_ITEMS to keep the payload and rendering tractable.
+    """
+    MAX_VIZ_ITEMS = 200
+
+    items = _knapsack_parse_solution(sol_path)
+    if items is None:
+        return {"knapsack_data": None}
+
+    try:
+        with open(inst_path) as f:
+            challenge = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {"knapsack_data": None}
+
+    n = challenge["num_items"]
+    interaction_values = challenge["interaction_values"]
+    weights = challenge["weights"]
+    max_weight = challenge["max_weight"]
+
+    sorted_items = sorted(i for i in items if i < n)
+    total_weight = sum(weights[i] for i in sorted_items)
+    total_value = 0
+    for idx_a, i in enumerate(sorted_items):
+        for j in sorted_items[idx_a + 1:]:
+            total_value += interaction_values[i][j]
+
+    viz_items = sorted_items[:MAX_VIZ_ITEMS]
+    k = len(viz_items)
+    sub_matrix = [[0] * k for _ in range(k)]
+    for ri, i in enumerate(viz_items):
+        for rj, j in enumerate(viz_items):
+            if i != j:
+                sub_matrix[ri][rj] = interaction_values[i][j]
+
+    return {
+        "knapsack_data": {
+            "num_selected": len(sorted_items),
+            "num_items": n,
+            "viz_items": viz_items,
+            "interaction_values": sub_matrix,
+            "total_value": max(0, total_value),
+            "max_weight": max_weight,
+            "total_weight": total_weight,
+        }
+    }
+
+
+# ── Energy-arbitrage-specific extras (schedule + DA prices) ────────
+
+
+def _energy_parse_solution(sol_path: str) -> list[list[float]] | None:
+    """Decode an energy_arbitrage solution file (base64 → gzip → bincode).
+
+    The schedule is Vec<Vec<f64>>: outer vec = timesteps, inner = batteries.
+    """
+    import base64
+    import gzip
+    import struct
+
+    try:
+        with open(sol_path) as f:
+            b64_str = json.load(f)
+        if not isinstance(b64_str, str):
+            return None
+        compressed = base64.b64decode(b64_str)
+        data = gzip.decompress(compressed)
+    except Exception:
+        return None
+
+    offset = 0
+
+    def read_u64() -> int:
+        nonlocal offset
+        val = struct.unpack_from("<Q", data, offset)[0]
+        offset += 8
+        return val
+
+    def read_f64() -> float:
+        nonlocal offset
+        val = struct.unpack_from("<d", data, offset)[0]
+        offset += 8
+        return val
+
+    try:
+        num_steps = read_u64()
+        schedule = []
+        for _ in range(num_steps):
+            num_batteries = read_u64()
+            actions = [read_f64() for _ in range(num_batteries)]
+            schedule.append(actions)
+        return schedule
+    except struct.error:
+        return None
+
+
+def _energy_extras(inst_path: str, sol_path: str) -> dict:
+    """Build energy viz payload: per-step aggregate charge/discharge + DA prices."""
+    schedule = _energy_parse_solution(sol_path)
+    if schedule is None:
+        return {"energy_data": None}
+
+    try:
+        with open(inst_path) as f:
+            challenge = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {"energy_data": None}
+
+    da_prices = challenge.get("market", {}).get("day_ahead_prices", [])
+    num_steps = len(schedule)
+
+    agg_charge = []
+    agg_discharge = []
+    for t in range(num_steps):
+        charge = 0.0
+        discharge = 0.0
+        for u in schedule[t]:
+            if u < 0:
+                charge += u
+            else:
+                discharge += u
+        agg_charge.append(round(charge, 4))
+        agg_discharge.append(round(discharge, 4))
+
+    avg_da = []
+    for t in range(min(num_steps, len(da_prices))):
+        prices_at_t = da_prices[t]
+        avg_da.append(round(sum(prices_at_t) / len(prices_at_t), 2) if prices_at_t else 0)
+
+    return {
+        "energy_data": {
+            "num_steps": num_steps,
+            "num_batteries": len(schedule[0]) if schedule else 0,
+            "agg_charge": agg_charge,
+            "agg_discharge": agg_discharge,
+            "avg_da_price": avg_da,
+        }
+    }
+
+
 # ── Aggregation & main ────────────────────────────────────────────
 
 
@@ -529,6 +716,24 @@ def main() -> int:
             if r.get("gantt_data")
         }
         out["viz_data"] = all_gantt or None
+        out["num_vehicles"] = 0
+        out["total_distance"] = out["score"]
+    elif challenge == "knapsack":
+        all_knapsack = {
+            r["instance"]: r["knapsack_data"]
+            for r in results
+            if r.get("knapsack_data")
+        }
+        out["viz_data"] = all_knapsack or None
+        out["num_vehicles"] = 0
+        out["total_distance"] = out["score"]
+    elif challenge == "energy_arbitrage":
+        all_energy = {
+            r["instance"]: r["energy_data"]
+            for r in results
+            if r.get("energy_data")
+        }
+        out["viz_data"] = all_energy or None
         out["num_vehicles"] = 0
         out["total_distance"] = out["score"]
     else:
