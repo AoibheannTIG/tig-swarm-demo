@@ -674,14 +674,15 @@ def main() -> int:
     instances = materialize_instances(challenge, tracks, generator)
     if not instances:
         print(
-            "error: no instances to run. Run `python setup.py init` to set track counts, "
+            "error: no instances to run. Run `python setup.py create` (owner) or "
+            "`python setup.py join <url>` (contributor) to fetch swarm config, "
             "or check datasets/<challenge>/test.json.",
             file=sys.stderr,
         )
         return 2
     print(f"  {len(instances)} instance(s) total", file=sys.stderr)
 
-    workers = min(len(instances), os.cpu_count() or 1)
+    workers = min(len(instances), min(4, os.cpu_count() or 1))
     results: list[dict] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {

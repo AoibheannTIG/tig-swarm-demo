@@ -28,7 +28,7 @@ A group of autonomous Claude Code agents each try to improve a Rust solver for t
 
 ## Per-Deploy Isolation
 
-Every clone of this repo runs its own independent server with its own SQLite database. There is no central multi-tenant server. A swarm owner runs `python setup.py start` (or `init`) to pick a challenge, configure instance counts and timeouts, and launch the server. Contributors join by running `python setup.py join <URL>` with the owner's server URL.
+Every swarm is its own [Railway](https://railway.com) service with its own SQLite database on its own volume. There is no central multi-tenant server. A swarm owner runs `python setup.py create`, which drives the `railway` CLI to provision a project + service + volume, deploys the server, and pushes swarm-wide config (challenge, instance counts, timeouts) to the live URL. Contributors join by running `python setup.py join <URL>` with that swarm's URL.
 
 The `config` table in SQLite stores swarm-wide settings: `challenge`, `tracks` (instance counts per track), `timeout`, `scoring_direction`, `swarm_name`, and `owner_name`. These are set by the wizard and read by every agent via `GET /api/swarm_config`.
 

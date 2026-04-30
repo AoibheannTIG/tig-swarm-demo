@@ -3,17 +3,21 @@
 
 Two modes:
 
-  python setup.py init        Owner: stand up a new swarm. Picks the challenge,
-                              instance counts per track, timeout, and server
-                              URL; writes swarm.config.json; templates files;
-                              optionally pushes config to a running server.
+  python setup.py create      Owner: stand up a new swarm on Railway. Drives
+                              the `railway` CLI to create a project + service
+                              + volume, sets env vars, deploys the server,
+                              then pushes swarm-wide config (challenge, tracks,
+                              timeout, …) to the live URL. Prints a share link
+                              for contributors.
 
-  python setup.py join URL    Contributor: point this clone at someone else's
+  python setup.py join URL    Contributor: point this clone at an existing
                               swarm URL. Templates the URL into CLAUDE.md /
                               scripts and creates a stub tacit_knowledge_personal.md
                               for the agent's private hints.
 
-Re-running either mode is safe — it overwrites the same set of files.
+Re-running either mode is safe — `create` always provisions a brand-new
+Railway project (overwriting the local `.railway/` link), and `join`
+overwrites the same set of templated files.
 
 Files this script reads / writes:
   - CLAUDE.md, README.md, scripts/publish.py
@@ -22,6 +26,7 @@ Files this script reads / writes:
   - CHALLENGE.md (per-challenge docs, from challenge_templates/)
   - tacit_knowledge_personal.md (per-contributor, gitignored)
   - datasets/<challenge>/test.json (rewritten with chosen track counts)
+  - .railway/config.json (managed by the `railway` CLI; gitignored)
 """
 
 from __future__ import annotations
@@ -29,22 +34,36 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
+import shutil
+import subprocess as sp
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).parent
 
-# Files that contain the ${SERVER_URL} placeholder. The wizard rewrites every
-# occurrence in-place. Re-running setup with a different URL safely re-runs
-# the substitution because the placeholder is restored at the same time.
+# Files that carry a swarm URL the wizard rewrites in-place. README is in the
+# list defensively (it has no URL today, but did historically) so any future
+# README URL also gets templated.
 TEMPLATED_FILES = [
     ROOT / "CLAUDE.md",
     ROOT / "README.md",
     ROOT / "scripts" / "publish.py",
+    ROOT / "scripts" / "benchmark.py",
 ]
+
+# Heuristic URL patterns that the wizard treats as "the swarm URL" and
+# replaces with the new one. Catches the canonical Railway domain and raw
+# IP-form URLs from older self-host setups. Without this, a clone that has
+# a baked URL not matching prior swarm.config.json's `server_url` (e.g.
+# someone committed their templated state, or migrated between hosting
+# styles) silently fails to re-template.
+_RAILWAY_URL_RE = re.compile(r"https?://[a-zA-Z0-9-]+\.up\.railway\.app")
+_RAW_IP_URL_RE = re.compile(r"https?://(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?")
 
 # The literal placeholder strings the tracked files carry. NEVER replace
 # arbitrary URLs — too easy to clobber rustup / GitHub / localhost dev URLs
@@ -164,11 +183,18 @@ def prompt_int(label: str, default: int, minimum: int = 0) -> int:
 
 
 def _swap(text: str, placeholder: str, prior: str | None, new: str) -> str:
-    """Replace placeholder OR prior value with new. Skip prior if it matches
-    the placeholder (already a noop) or new (nothing to do)."""
+    """Replace the placeholder, the previously-templated URL, AND any other
+    Railway / raw-IP URL we find in `text` with `new`.
+
+    The regex pass catches stale baked URLs that don't match `prior` — e.g.
+    a clone where the templated files were committed pointing at one swarm
+    but `swarm.config.json` was last written by setup against a different
+    one. Without it, `_swap` silently leaves the wrong URL in place."""
     text = text.replace(placeholder, new)
     if prior and prior != placeholder and prior != new:
         text = text.replace(prior, new)
+    text = _RAILWAY_URL_RE.sub(new, text)
+    text = _RAW_IP_URL_RE.sub(new, text)
     return text
 
 
@@ -370,22 +396,210 @@ def gather_tacit_knowledge(tk_path: Path, stagnation_threshold: int = 2) -> None
     print(f"  wrote your strategies to {tk_path.relative_to(ROOT)}")
 
 
+# ── Railway CLI helpers ──────────────────────────────────────────────
+
+
+_RAILWAY_INSTALL_HINT = (
+    "Install one of these, then re-run:\n"
+    "    bash <(curl -fsSL cli.new)        # vendor installer (any OS with bash)\n"
+    "    npm i -g @railway/cli             # if you have node\n"
+    "    brew install railway              # macOS\n"
+    "    cargo install railwayapp --locked # rust\n"
+)
+
+
+def _railway_run(*args: str, check: bool = True) -> sp.CompletedProcess:
+    """Run `railway <args>` and capture output. Exit on non-zero unless check=False."""
+    try:
+        result = sp.run(
+            ["railway", *args],
+            capture_output=True,
+            text=True,
+            cwd=str(ROOT),
+        )
+    except FileNotFoundError:
+        print("Railway CLI not found in PATH.\n" + _RAILWAY_INSTALL_HINT)
+        sys.exit(2)
+    if check and result.returncode != 0:
+        msg = (result.stderr or result.stdout or "").strip() or f"exit {result.returncode}"
+        print(f"  error: railway {' '.join(args)} failed: {msg}")
+        sys.exit(2)
+    return result
+
+
+def _railway_check_installed() -> None:
+    if shutil.which("railway") is None:
+        print("Railway CLI not found in PATH.\n" + _RAILWAY_INSTALL_HINT)
+        sys.exit(2)
+
+
+def _railway_check_auth() -> dict:
+    """Return whoami JSON, or exit telling the user to `railway login`."""
+    result = _railway_run("whoami", "--json", check=False)
+    if result.returncode != 0:
+        print(
+            "Not logged in to Railway. Run this in another terminal, complete the\n"
+            "browser flow, then re-run `python setup.py create`:\n"
+            "    railway login\n"
+        )
+        sys.exit(2)
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {}
+
+
+def _pick_workspace(whoami: dict) -> str | None:
+    """Return a workspace name (or None for single/no workspace).
+
+    `railway init --json` requires `--workspace` when the user has more
+    than one. Surface a prompt so the wizard can route the new project to
+    the right workspace."""
+    workspaces = whoami.get("workspaces") or []
+    if len(workspaces) <= 1:
+        return None
+    names = [w.get("name", "") for w in workspaces if w.get("name")]
+    if not names:
+        return None
+    print("\nMultiple Railway workspaces found. Pick one for this swarm:")
+    return prompt_choice("  workspace", names, default=names[0])
+
+
+def _railway_init_project(name: str, workspace: str | None = None) -> dict:
+    args = ["init", "-n", name, "--json"]
+    if workspace:
+        args += ["--workspace", workspace]
+    result = _railway_run(*args)
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {"name": name}
+
+
+def _railway_add_service(name: str) -> dict:
+    result = _railway_run("add", "--service", name, "--json")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {"name": name}
+
+
+def _railway_set_variables(service: str, vars: dict[str, str]) -> None:
+    args = ["variable", "set", "--service", service, "--skip-deploys"]
+    for k, v in vars.items():
+        args.append(f"{k}={v}")
+    _railway_run(*args)
+
+
+def _railway_add_volume(service: str, mount_path: str) -> None:
+    """Create a persistent volume mounted at `mount_path`.
+
+    The volume attaches to the linked service in `.railway/config.json`
+    (set by the preceding `railway add --service`). `volume add` doesn't
+    accept `--service`; we rely on the link being correct.
+
+    `volume add` is the one non-idempotent step — it bails if a volume is
+    already mounted on the linked service. Treat that as success."""
+    result = _railway_run("volume", "add", "--mount-path", mount_path, check=False)
+    if result.returncode == 0:
+        return
+    err = (result.stderr or "").lower()
+    if "already" in err and "mount" in err:
+        print(f"    volume already mounted at {mount_path}; skipping")
+        return
+    msg = (result.stderr or result.stdout or "").strip() or f"exit {result.returncode}"
+    print(f"  error: railway volume add failed: {msg}")
+    sys.exit(2)
+
+
+def _railway_up(service: str) -> None:
+    """Deploy. --ci streams build logs and blocks until SUCCESS / FAILED."""
+    # Inherit stdout/stderr so the user sees build logs as they stream.
+    result = sp.run(
+        ["railway", "up", "--service", service, "--ci"],
+        cwd=str(ROOT),
+    )
+    if result.returncode != 0:
+        print("  error: railway up failed. Check the build logs above.")
+        sys.exit(2)
+
+
+def _railway_domain(service: str) -> str:
+    """Get (or generate) the public URL for `service`. Idempotent."""
+    result = _railway_run("domain", "--service", service, "--json")
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        print(f"  error: couldn't parse `railway domain` output: {result.stdout!r}")
+        sys.exit(2)
+    if isinstance(data, dict):
+        if isinstance(data.get("domain"), str):
+            return _ensure_https(data["domain"])
+        domains = data.get("domains")
+        if isinstance(domains, list) and domains:
+            first = domains[0]
+            if isinstance(first, str):
+                return _ensure_https(first)
+            if isinstance(first, dict) and isinstance(first.get("domain"), str):
+                return _ensure_https(first["domain"])
+    print(f"  error: railway domain returned no usable URL: {data!r}")
+    sys.exit(2)
+
+
+def _ensure_https(domain: str) -> str:
+    if domain.startswith(("http://", "https://")):
+        return domain.rstrip("/")
+    return f"https://{domain}".rstrip("/")
+
+
+def _wait_for_server(url: str, timeout: int = 60) -> bool:
+    """Poll <url>/api/swarm_config until it responds or timeout passes.
+
+    `railway up --ci` returns when the container starts; the FastAPI app
+    needs a few extra seconds to bind. Without this poll, the immediate
+    POST /api/swarm_config below races the app startup."""
+    deadline = time.time() + timeout
+    probe = f"{url.rstrip('/')}/api/swarm_config"
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(probe, timeout=4) as r:
+                if r.status == 200:
+                    return True
+        except Exception:
+            pass
+        time.sleep(2)
+    return False
+
+
 # ── Modes ────────────────────────────────────────────────────────────
 
 
-def run_init() -> int:
-    print("TIG Swarm — initialise a new swarm")
+def run_create() -> int:
+    """Owner setup: configure a new swarm and deploy it on Railway.
+
+    End-to-end: verify `railway` CLI + auth → wizard prompts → reset any
+    prior `.railway/` link in this clone → `railway init` → `railway add
+    --service` → `railway variable set` (DATA_DIR, ADMIN_KEY) → `railway
+    volume add --mount-path /data` → `railway up --ci` (blocks until the
+    deploy is live) → `railway domain --json` → POST swarm-wide config.
+
+    Re-running on a clone that already created a swarm is fine: this
+    deletes `.railway/` and creates a fresh project on Railway. The
+    previous swarm is unaffected — it lives independently in your Railway
+    workspace; manage it via the Railway dashboard."""
+    print("TIG Swarm — create a new swarm on Railway")
     print("=" * 48)
-    print(
-        "You are the swarm OWNER. This wizard configures your swarm-wide\n"
-        "settings (challenge, instance counts, timeout) and templates your\n"
-        "URL into the docs Claude agents read.\n"
+
+    _railway_check_installed()
+    user = _railway_check_auth()
+    who = user.get("email") or user.get("name") or "unknown"
+    print(f"  authed as Railway user: {who}\n")
+    workspace = _pick_workspace(user)
+
+    swarm_name = prompt(
+        "Swarm name (used as Railway project + service name; lowercase + dashes)",
+        default="my-tig-swarm",
     )
-
-    prior = read_prior_swarm_config()
-
-    swarm_name = prompt("Swarm name (display only)", default="my-tig-swarm")
-    owner_name = prompt("Your name (display only)", default=os.environ.get("USER", "owner"))
 
     challenge = prompt_choice(
         "Which TIG challenge will this swarm optimize?",
@@ -404,18 +618,16 @@ def run_init() -> int:
     for key in challenge_meta["track_keys"]:
         tracks[key] = prompt_int(f"  instances for {key}", DEFAULT_INSTANCES_PER_TRACK, minimum=0)
 
-    timeout = prompt_int("Per-instance solver timeout (seconds)", DEFAULT_TIMEOUT, minimum=1)
+    timeout = prompt_int("\nPer-instance solver timeout (seconds)", DEFAULT_TIMEOUT, minimum=1)
 
     stagnation_threshold = prompt_int(
         "Stagnation threshold (iterations without improvement before hints/inspiration)",
         2, minimum=1,
     )
-
     stagnation_limit = prompt_int(
         "Stagnation limit (iterations without improvement before trajectory reset, 0=disabled)",
         10, minimum=0,
     )
-
     feed_per_agent = prompt_int(
         "Ideas-in-flight feed: how many recent hypotheses to see per other "
         f"active agent each iteration (0=disabled, max {FEED_PER_AGENT_MAX})",
@@ -423,27 +635,47 @@ def run_init() -> int:
     )
     feed_per_agent = min(feed_per_agent, FEED_PER_AGENT_MAX)
 
-    print(
-        "\nYour server URL is what agents POST to and what the dashboard\n"
-        "lives at. Pick the form that matches how you're running it:\n"
-        "  - http://localhost:8080         (local dev only)\n"
-        "  - https://<your-tunnel>         (cloudflared / ngrok / tailscale funnel)\n"
-        "  - https://<your-railway>.up.railway.app\n"
-    )
-    server_url = prompt("Server URL", default="http://localhost:8080")
+    tk_path = init_personal_tacit_knowledge(stagnation_threshold)
+    gather_tacit_knowledge(tk_path, stagnation_threshold)
 
-    # Preserve the existing admin_key on re-runs; otherwise generate a fresh
-    # random secret. Never default to a published constant — the key gates
-    # /api/admin/* and is sent over the wire on every admin call.
-    admin_key_default = (prior or {}).get("admin_key") or secrets.token_urlsafe(16)
-    admin_key = prompt(
-        "Admin key (used to push config and broadcast; press Enter to keep generated)",
-        default=admin_key_default,
-    )
+    admin_key = secrets.token_urlsafe(16)
+
+    railway_dir = ROOT / ".railway"
+    if railway_dir.exists():
+        print(f"\nRemoving existing {railway_dir.relative_to(ROOT)} from a prior run.")
+        shutil.rmtree(railway_dir)
+
+    print("\nProvisioning on Railway…")
+    project = _railway_init_project(swarm_name, workspace=workspace)
+    print(f"  project: {project.get('name', swarm_name)}")
+
+    service = _railway_add_service(swarm_name)
+    print(f"  service: {service.get('name', swarm_name)}")
+
+    print("  setting environment variables…")
+    _railway_set_variables(swarm_name, {"DATA_DIR": "/data", "ADMIN_KEY": admin_key})
+
+    print("  attaching /data volume…")
+    _railway_add_volume(swarm_name, "/data")
+
+    print("  deploying (build logs follow; this takes a few minutes)…\n")
+    _railway_up(swarm_name)
+
+    print("\n  fetching public URL…")
+    server_url = _railway_domain(swarm_name)
+    print(f"  URL: {server_url}")
+
+    print("  waiting for the server to come online…")
+    if not _wait_for_server(server_url):
+        print(
+            "  warning: server did not respond at /api/swarm_config within 60s.\n"
+            "  Check `railway logs` for errors. You can re-run\n"
+            f"  `python setup.py join {server_url}` once it's up to finish wiring."
+        )
 
     cfg = {
         "swarm_name": swarm_name,
-        "owner_name": owner_name,
+        "owner_name": os.environ.get("USER", "owner"),
         "server_url": server_url,
         "admin_key": admin_key,
         "challenge": challenge,
@@ -453,16 +685,18 @@ def run_init() -> int:
         "stagnation_limit": stagnation_limit,
         "feed_per_agent": feed_per_agent,
         "scoring_direction": challenge_meta["scoring_direction"],
+        "algorithm_path": f"src/{challenge}/algorithm/mod.rs",
     }
 
-    algorithm_path = f"src/{challenge}/algorithm/mod.rs"
-    cfg["algorithm_path"] = algorithm_path
+    print("  pushing swarm config to the server…")
+    push_config_to_server(server_url, admin_key, cfg)
 
-    print("\nWriting files…")
+    prior = read_prior_swarm_config()
+    print("\nWriting local files…")
     template_files(
         server_url,
         challenge=challenge,
-        algorithm_path=algorithm_path,
+        algorithm_path=cfg["algorithm_path"],
         prior=prior,
     )
     write_challenge_md(challenge)
@@ -472,23 +706,35 @@ def run_init() -> int:
     (test_json_dir / "test.json").write_text(json.dumps(tracks, indent=2) + "\n")
     print(f"  wrote {(test_json_dir / 'test.json').relative_to(ROOT)}")
 
-    print("\nPushing swarm config to server (best effort)…")
-    push_config_to_server(server_url, admin_key, cfg)
-
-    tk_path = init_personal_tacit_knowledge(stagnation_threshold)
-    gather_tacit_knowledge(tk_path, stagnation_threshold)
-
-    print(
-        "\nDone. Next steps:\n"
-        "  1. (If not already) start the server:\n"
-        "       cd server && pip install -r requirements.txt && \\\n"
-        "         DATA_DIR=$(pwd)/../data uvicorn server:app --port 8080\n"
-        "  2. Visit your server URL — the dashboard is served from /.\n"
-        "  3. Share your URL with collaborators. They run:\n"
-        f"       python setup.py join {server_url}\n"
-        "  4. Each contributor (including you) opens Claude Code in this\n"
-        "     directory and tells it to read CLAUDE.md.\n"
+    repo_url = "<this-repo-url>"
+    try:
+        result = sp.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=3, cwd=str(ROOT),
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            repo_url = result.stdout.strip()
+    except Exception:
+        pass
+    repo_dir_hint = (
+        Path(repo_url).stem.replace(".git", "")
+        if repo_url != "<this-repo-url>"
+        else "tig-swarm-demo"
     )
+
+    print("\n" + "=" * 48)
+    print("SWARM IS LIVE")
+    print("=" * 48)
+    print(f"\n  Dashboard:  {server_url}/")
+    print(f"  Challenge:  {challenge}")
+    print("\n  Share this with anyone who wants to join:\n")
+    print(f"    git clone {repo_url}")
+    print(f"    cd {repo_dir_hint}")
+    print(f"    python setup.py join {server_url}")
+    print("\n  Admin key (keep private — gates /api/admin/*):")
+    print(f"    {admin_key}")
+    print("\n  Manage the service in Railway: https://railway.com/dashboard")
+    print()
     return 0
 
 
@@ -553,218 +799,22 @@ def run_join(server_url: str) -> int:
     return 0
 
 
-# ── Auto-detect public URL ──────────────────────────────────────────
-
-
-def detect_public_url(port: int) -> str:
-    """Try to find a publicly reachable URL for this machine."""
-    import socket
-    import subprocess as sp
-
-    # Try to get the default-route IP (works on most Linux)
-    try:
-        result = sp.run(
-            ["hostname", "-I"], capture_output=True, text=True, timeout=3
-        )
-        if result.returncode == 0:
-            first_ip = result.stdout.strip().split()[0]
-            # Check if it's a public IP (not 10.x, 172.16-31.x, 192.168.x)
-            parts = first_ip.split(".")
-            if parts[0] not in ("10", "127") and not (
-                parts[0] == "172" and 16 <= int(parts[1]) <= 31
-            ) and not (parts[0] == "192" and parts[1] == "168"):
-                return f"http://{first_ip}:{port}"
-    except Exception:
-        pass
-
-    # Fallback: try external service
-    try:
-        with urllib.request.urlopen("https://ifconfig.me", timeout=3) as r:
-            ip = r.read().decode().strip()
-            return f"http://{ip}:{port}"
-    except Exception:
-        pass
-
-    return f"http://localhost:{port}"
-
-
-# ── Start (automated owner setup) ──────────────────────────────────
-
-
-def run_start() -> int:
-    """Automated owner setup: prompts only for challenge, instances per
-    track, and timeout. Auto-detects public URL, starts the server, and
-    prints a shareable join link."""
-    import subprocess as sp
-
-    port = 8080
-    print("TIG Swarm — automated setup")
-    print("=" * 48)
-
-    challenge = prompt_choice(
-        "Which TIG challenge will this swarm optimize?",
-        list(CHALLENGES.keys()),
-        default="vehicle_routing",
-    )
-    challenge_meta = CHALLENGES[challenge]
-    print(f"  -> {challenge}")
-
-    print(
-        f"\n{challenge} has 5 tracks. For each, choose how many instances to\n"
-        f"benchmark per iteration. Default is {DEFAULT_INSTANCES_PER_TRACK}."
-    )
-    tracks: dict = {"seed": "test"}
-    for key in challenge_meta["track_keys"]:
-        tracks[key] = prompt_int(f"  instances for {key}", DEFAULT_INSTANCES_PER_TRACK, minimum=0)
-
-    timeout = prompt_int("\nPer-instance solver timeout (seconds)", DEFAULT_TIMEOUT, minimum=1)
-
-    stagnation_threshold = prompt_int(
-        "Stagnation threshold (iterations without improvement before hints/inspiration)",
-        2, minimum=1,
-    )
-
-    stagnation_limit = prompt_int(
-        "Stagnation limit (iterations without improvement before trajectory reset, 0=disabled)",
-        10, minimum=0,
-    )
-
-    feed_per_agent = prompt_int(
-        "Ideas-in-flight feed: how many recent hypotheses to see per other "
-        f"active agent each iteration (0=disabled, max {FEED_PER_AGENT_MAX})",
-        DEFAULT_FEED_PER_AGENT, minimum=0,
-    )
-    feed_per_agent = min(feed_per_agent, FEED_PER_AGENT_MAX)
-
-    # Tacit knowledge
-    tk_path = init_personal_tacit_knowledge(stagnation_threshold)
-    gather_tacit_knowledge(tk_path, stagnation_threshold)
-
-    # Ensure data directory exists
-    data_dir = ROOT / "server" / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    # Start the server
-    print("\nStarting server…")
-    env = os.environ.copy()
-    env["DATA_DIR"] = str(data_dir)
-    server_proc = sp.Popen(
-        [sys.executable, "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", str(port)],
-        cwd=str(ROOT / "server"),
-        env=env,
-        stdout=sp.DEVNULL,
-        stderr=sp.DEVNULL,
-    )
-
-    # Wait for server to be ready
-    import time
-    for _ in range(20):
-        time.sleep(0.5)
-        try:
-            with urllib.request.urlopen(f"http://localhost:{port}/api/swarm_config", timeout=2):
-                break
-        except Exception:
-            continue
-    else:
-        print("  error: server did not start within 10 seconds")
-        server_proc.kill()
-        return 1
-
-    print(f"  server running (PID {server_proc.pid})")
-
-    # Detect public URL
-    server_url = detect_public_url(port)
-    print(f"  detected URL: {server_url}")
-
-    # Verify reachability
-    try:
-        with urllib.request.urlopen(f"{server_url}/api/swarm_config", timeout=3):
-            pass
-        print(f"  confirmed reachable")
-    except Exception:
-        print(f"  warning: {server_url} may not be reachable externally")
-        print(f"  falling back to localhost — share via tunnel if needed")
-        server_url = f"http://localhost:{port}"
-
-    # Preserve any prior admin_key on re-runs; generate a fresh random one
-    # otherwise. Never reuse the historical published default.
-    prior_for_key = read_prior_swarm_config() or {}
-    admin_key = prior_for_key.get("admin_key") or secrets.token_urlsafe(16)
-    cfg = {
-        "swarm_name": f"{challenge}-swarm",
-        "owner_name": os.environ.get("USER", "owner"),
-        "server_url": server_url,
-        "admin_key": admin_key,
-        "challenge": challenge,
-        "tracks": tracks,
-        "timeout": timeout,
-        "stagnation_threshold": stagnation_threshold,
-        "stagnation_limit": stagnation_limit,
-        "feed_per_agent": feed_per_agent,
-        "scoring_direction": challenge_meta["scoring_direction"],
-        "algorithm_path": f"src/{challenge}/algorithm/mod.rs",
-    }
-
-    print("\nWriting config…")
-    prior = read_prior_swarm_config()
-    template_files(
-        server_url,
-        challenge=challenge,
-        algorithm_path=cfg["algorithm_path"],
-        prior=prior,
-    )
-    write_challenge_md(challenge)
-    write_swarm_config(cfg)
-    test_json_dir = ROOT / "datasets" / challenge
-    test_json_dir.mkdir(parents=True, exist_ok=True)
-    (test_json_dir / "test.json").write_text(json.dumps(tracks, indent=2) + "\n")
-
-    print("Pushing config to server…")
-    push_config_to_server(server_url, admin_key, cfg)
-
-    # Detect the git remote URL so the join instructions are correct for forks
-    repo_url = "<this-repo-url>"
-    try:
-        result = sp.run(
-            ["git", "remote", "get-url", "origin"],
-            capture_output=True, text=True, timeout=3, cwd=str(ROOT),
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            repo_url = result.stdout.strip()
-    except Exception:
-        pass
-
-    print("\n" + "=" * 48)
-    print("SWARM IS LIVE")
-    print("=" * 48)
-    print(f"\n  Dashboard:  {server_url}/")
-    print(f"  Challenge:  {challenge}")
-    print(f"\n  Share this with your friends to join:\n")
-    print(f"    git clone {repo_url}")
-    print(f"    cd {Path(repo_url).stem.replace('.git', '') if repo_url != '<this-repo-url>' else 'tig-swarm-demo'}")
-    print(f"    python setup.py join {server_url}")
-    print(f"\n  Then tell Claude: 'Read CLAUDE.md and start contributing to the swarm.'")
-    print(f"\n  Server PID: {server_proc.pid} (kill with: kill {server_proc.pid})")
-    print()
-    return 0
-
-
 # ── Entrypoint ──────────────────────────────────────────────────────
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="setup.py")
     sub = parser.add_subparsers(dest="mode", required=True)
-    sub.add_parser("init", help="Owner: configure a new swarm (manual server setup).")
-    sub.add_parser("start", help="Owner: configure + auto-start server + print join link.")
+    sub.add_parser(
+        "create",
+        help="Owner: provision a new swarm on Railway (drives the railway CLI).",
+    )
     join = sub.add_parser("join", help="Contributor: point this clone at a swarm URL.")
     join.add_argument("server_url", help="The swarm owner's server URL.")
     args = parser.parse_args()
 
-    if args.mode == "init":
-        return run_init()
-    if args.mode == "start":
-        return run_start()
+    if args.mode == "create":
+        return run_create()
     if args.mode == "join":
         return run_join(args.server_url)
     parser.print_help()

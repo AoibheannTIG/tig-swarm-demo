@@ -135,7 +135,7 @@ CREATE INDEX IF NOT EXISTS idx_hyp_agent_target ON hypotheses(agent_id, target_b
 DEFAULT_CONFIG = {
     # Swarm-wide configuration written by the setup wizard via
     # POST /api/swarm_config and read by every clone via GET /api/swarm_config.
-    # The defaults below are pre-wizard placeholders — `python setup.py init`
+    # The defaults below are pre-wizard placeholders — `python setup.py create`
     # overwrites every key. `tracks` is the dict shape that mirrors
     # datasets/<challenge>/test.json (instance counts per track key).
     "challenge": "vehicle_routing",
