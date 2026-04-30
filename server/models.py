@@ -119,6 +119,11 @@ class SwarmConfigUpdate(AdminAuth):
     owner_name: str = ""
     stagnation_threshold: int = 2
     stagnation_limit: int = 10
+    # Source of `initial_algorithm.rs` from the host's clone; broadcast as
+    # the starting code for every fresh trajectory (first iteration + the
+    # "fresh start" slot of trajectory resets). Empty string is fine and
+    # means "agents start from nothing."
+    initial_algorithm_code: str = ""
 
 
 class MessageCreate(BaseModel):

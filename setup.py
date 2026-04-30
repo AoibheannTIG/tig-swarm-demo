@@ -257,6 +257,7 @@ def push_config_to_server(server_url: str, admin_key: str, cfg: dict) -> None:
         "owner_name": cfg.get("owner_name", ""),
         "stagnation_threshold": cfg.get("stagnation_threshold", 2),
         "stagnation_limit": cfg.get("stagnation_limit", 10),
+        "initial_algorithm_code": cfg.get("initial_algorithm_code", ""),
     }
     req = urllib.request.Request(
         f"{server_url.rstrip('/')}/api/swarm_config",
@@ -673,6 +674,14 @@ def run_create() -> int:
             f"  `python setup.py join {server_url}` once it's up to finish wiring."
         )
 
+    initial_algorithm_path = ROOT / "initial_algorithm.rs"
+    if initial_algorithm_path.is_file():
+        initial_algorithm_code = initial_algorithm_path.read_text()
+        print(f"  read initial algorithm from {initial_algorithm_path.relative_to(ROOT)} ({len(initial_algorithm_code)} chars)")
+    else:
+        initial_algorithm_code = ""
+        print(f"  warning: {initial_algorithm_path.relative_to(ROOT)} missing — broadcasting empty initial algorithm")
+
     cfg = {
         "swarm_name": swarm_name,
         "owner_name": os.environ.get("USER", "owner"),
@@ -686,6 +695,7 @@ def run_create() -> int:
         "feed_per_agent": feed_per_agent,
         "scoring_direction": challenge_meta["scoring_direction"],
         "algorithm_path": f"src/{challenge}/algorithm/mod.rs",
+        "initial_algorithm_code": initial_algorithm_code,
     }
 
     print("  pushing swarm config to the server…")

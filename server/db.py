@@ -138,12 +138,16 @@ DEFAULT_CONFIG = {
     # The defaults below are pre-wizard placeholders — `python setup.py create`
     # overwrites every key. `tracks` is the dict shape that mirrors
     # datasets/<challenge>/test.json (instance counts per track key).
+    # `initial_algorithm_code` is the source of `initial_algorithm.rs` from
+    # the host's clone, broadcast as the starting code on every fresh
+    # trajectory; empty until the wizard's first POST.
     "challenge": "vehicle_routing",
     "tracks": "{}",
     "timeout": "30",
     "scoring_direction": "max",
     "swarm_name": "",
     "owner_name": "",
+    "initial_algorithm_code": "",
 }
 
 

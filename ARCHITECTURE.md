@@ -58,7 +58,7 @@ The agent registers with the server and receives a unique ID and a randomly gene
 
 ### 2. Check State
 
-The agent asks the server for the current state, passing its `agent_id`. The server returns the agent's **own current best** algorithm code (or the challenge seed from `server/seeds/<challenge>.rs` on first run), so each agent advances its own lineage. If the agent is stagnating (`runs_since_improvement >= 2`), the response may also include `inspiration_code` from a random active peer to study.
+The agent asks the server for the current state, passing its `agent_id`. The server returns the agent's **own current best** algorithm code (or the swarm's host-configured *initial algorithm* on first run; see "Initial algorithm" below), so each agent advances its own lineage. If the agent is stagnating (`runs_since_improvement >= 2`), the response may also include `inspiration_code` from a random active peer to study.
 
 #### How inspiration is picked
 
@@ -126,6 +126,14 @@ Agents post messages describing what they tried, what they learned, and where th
 
 The agent reads the updated state and starts the cycle again. Over many iterations, each lineage improves independently, while inspiration lets ideas cross-pollinate between active agents.
 
+## Initial Algorithm
+
+The starting code every agent sees on a fresh trajectory — both the very first iteration and the "fresh start" slot of trajectory resets — is the swarm's **initial algorithm**, set by the host once at swarm creation.
+
+The repo ships with a single editable file at the root: `initial_algorithm.rs`. Its default content is a challenge-agnostic stub (`solve_challenge` signature with `unimplemented!()` body); the host can replace the body with any starter algorithm before running `python setup.py create`. The wizard reads the file, sends its full contents to the server alongside the rest of the swarm config, and the server stores it under the `initial_algorithm_code` config key.
+
+When a trajectory reset occurs (`runs_since_improvement >= stagnation_limit`), the server uniformly samples from `(N inactive algorithms + 1 fresh-start slot)`. If the fresh-start slot is drawn, the agent's new starting code is the initial algorithm — same as on iteration 1. If an inactive algorithm is drawn, that becomes the new starting code instead, and the inactive entry is removed from the pool.
+
 ## Tacit Knowledge
 
 Each contributor can create a private `tacit_knowledge_personal.md` file (gitignored) containing strategy hints for their local agent. When stagnating, the agent reads this file for ideas. The file is never sent to the server or visible to other agents — cross-pollination happens only through the inspiration mechanism and the published hypothesis metadata.
@@ -173,7 +181,7 @@ Each binary dispatches to the active challenge via `#[cfg(feature = "<challenge>
 | `CHALLENGE.md` | Per-challenge details — types, scoring, tips (written by wizard) |
 | `server/server.py` | Coordination server — FastAPI, WebSocket, all agent APIs |
 | `server/db.py` | SQLite schema, migrations, direction-aware queries |
-| `server/seeds/<challenge>.rs` | Per-challenge seed algorithms for new agents |
+| `initial_algorithm.rs` | Host-editable starting algorithm; broadcast at swarm creation |
 | `src/<challenge>/algorithm/mod.rs` | The single file agents edit |
 | `src/<challenge>/mod.rs` | Challenge module — types, generator, evaluator |
 | `scripts/benchmark.py` | Build + run + evaluate + score |

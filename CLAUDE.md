@@ -71,7 +71,7 @@ if flight:
 ```
 
 This returns:
-- `best_algorithm_code` — **your own** current best code (or the per-challenge seed from `server/seeds/<challenge>.rs` on first run; may be empty if the swarm host hasn't ported a seed for the active challenge). Write this to `mod.rs`.
+- `best_algorithm_code` — **your own** current best code (or the swarm's host-configured *initial algorithm* on first run; may be empty if the host hasn't set one — in that case you'll need to author a minimal `solve_challenge` yourself). Write this to `mod.rs`.
 - `my_best_score` — your current best score (null on first run)
 - `my_runs` — total iterations you've completed
 - `my_improvements` — how many times you've beaten your own best
@@ -115,7 +115,7 @@ if code:
 - If `stagnation_hint == "tacit_knowledge"`: read `tacit_knowledge_personal.md` in the repo root. Pick one hint that matches your situation and incorporate it. If the file is missing or empty, fall back to using `/tmp/inspiration.rs`.
 - If `stagnation_hint == "inspiration"`: read `/tmp/inspiration.rs` to study what another agent is doing differently. Look for techniques, data structures, or strategies you could adapt into your own code. But always edit `mod.rs` (your own best), not the inspiration file.
 
-On your **first iteration** (no current best yet), the server gives you the active challenge's seed from `server/seeds/<challenge>.rs`. If that seed file is empty (the swarm host hasn't ported one), you'll need to author a minimal `solve_challenge` for the active challenge yourself before benchmarking.
+On your **first iteration** (no current best yet), the server gives you the swarm's *initial algorithm* — set by the host from the `initial_algorithm.rs` file in the repo root at swarm-creation time. If the host left that file as the default template (or pushed an empty string), `best_algorithm_code` arrives as a stub with `unimplemented!()` (or empty). Either way, you'll need to author a real `solve_challenge` body for the active challenge before benchmarking.
 
 ### Step 3: Think and Edit
 

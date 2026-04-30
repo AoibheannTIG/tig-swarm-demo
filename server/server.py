@@ -23,29 +23,16 @@ import db
 
 logger = logging.getLogger("swarm")
 
-# Per-challenge seed algorithms served as best_algorithm_code on a fresh
-# run, before any experiments have been published. The seed for the active
-# challenge gets written to the agent's algorithm/mod.rs and benchmarked;
-# whatever score it produces becomes the lineage's foundation. Each
-# challenge has its own file under server/seeds/<challenge>.rs — empty
-# files mean "not yet ported"; the agent will see an empty seed and
-# either author its own or fail loudly.
-_SEEDS_DIR = Path(__file__).parent / "seeds"
+# Initial algorithm broadcast to every agent on a fresh trajectory:
+# their first iteration, and again whenever a trajectory reset draws the
+# "fresh start" slot from the inactive-algorithms pool. Set by the host
+# at create time (the wizard reads `initial_algorithm.rs` from the repo
+# root and POSTs it to /api/swarm_config); empty until the first
+# successful POST, in which case agents start from a blank slate.
 
 
-def load_seed_for(challenge: str) -> str:
-    path = _SEEDS_DIR / f"{challenge}.rs"
-    try:
-        text = path.read_text()
-    except FileNotFoundError:
-        logger.warning("seed not found at %s — serving empty", path)
-        return ""
-    if not text.strip():
-        logger.warning(
-            "seed at %s is empty — first %s agent will need to author one",
-            path, challenge,
-        )
-    return text
+def load_initial_algorithm(config: dict) -> str:
+    return config.get("initial_algorithm_code", "") or ""
 
 
 # Cached config — refreshed on admin config update
@@ -382,7 +369,7 @@ async def get_state(agent_id: str | None = None, feed_per_agent: int = 5):
                 # Uniform pick: 1/(n_inactive+1) for fresh, 1/(n_inactive+1) for each inactive
                 new_traj_id = None
                 if random.randint(0, n_inactive) == 0:
-                    new_code = load_seed_for(config.get("challenge", "vehicle_routing"))
+                    new_code = load_initial_algorithm(config)
                     trajectory_reset = {"type": "fresh_start"}
                 else:
                     picked = await db.pick_random_inactive(conn)
@@ -399,7 +386,7 @@ async def get_state(agent_id: str | None = None, feed_per_agent: int = 5):
                             await db.reactivate_trajectory(conn, new_traj_id)
                             await db.increment_trajectory_agents(conn, new_traj_id)
                     else:
-                        new_code = load_seed_for(config.get("challenge", "vehicle_routing"))
+                        new_code = load_initial_algorithm(config)
                         trajectory_reset = {"type": "fresh_start"}
 
                 await db.clear_agent_best(conn, agent_id)
@@ -429,7 +416,7 @@ async def get_state(agent_id: str | None = None, feed_per_agent: int = 5):
             else:
                 my_best_code = (
                     my_best["algorithm_code"] if my_best
-                    else load_seed_for(config.get("challenge", "vehicle_routing"))
+                    else load_initial_algorithm(config)
                 )
                 my_best_score = my_best["score"] if my_best else None
                 my_best_experiment_id = my_best["experiment_id"] if my_best else None
@@ -580,7 +567,7 @@ async def get_state(agent_id: str | None = None, feed_per_agent: int = 5):
         "improvement_pct": overall_imp,
         "best_algorithm_code": (
             served["algorithm_code"] if served
-            else load_seed_for(config.get("challenge", "vehicle_routing"))
+            else load_initial_algorithm(config)
         ),
         "best_experiment_id": served["id"] if served else None,
         "best_route_data": json.loads(served["route_data"]) if served and served["route_data"] else None,
@@ -1414,6 +1401,7 @@ async def update_swarm_config(req: SwarmConfigUpdate):
         "owner_name": req.owner_name,
         "stagnation_threshold": str(req.stagnation_threshold),
         "stagnation_limit": str(req.stagnation_limit),
+        "initial_algorithm_code": req.initial_algorithm_code,
     }
     async with db.connect() as conn:
         for key, value in updates.items():
