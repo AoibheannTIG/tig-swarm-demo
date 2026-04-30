@@ -1,6 +1,6 @@
 # Swarm Agent — Automated Discovery at Scale
 
-> **⚠ Run setup first.** If the URLs below still look like a `$\{SERVER_URL\}`-style placeholder rather than an actual swarm URL, the human running this clone has not yet pointed it at a swarm. Run `python setup.py create` (owner: provisions a new swarm on Railway and prints the share URL) or `python setup.py join <URL>` (contributor: joins an existing swarm) before continuing. The wizard substitutes the URL into this file and `scripts/`.
+> **⚠ Run setup first.** If the URLs below still look like a `$\{SERVER_URL\}`-style placeholder rather than an actual swarm URL, the human running this clone has not yet pointed it at a swarm. Run `python setup.py create` (host: provisions a new swarm on Railway and prints the share URL) or `python setup.py join <URL>` (contributor: joins an existing swarm) before continuing. The wizard substitutes the URL into this file and `scripts/`.
 
 > **Active challenge:** this swarm is configured for **vehicle_routing**. Read `CHALLENGE.md` (in this repo, written by the wizard) for the problem definition, the `Challenge` / `Solution` types, the scoring direction, and per-challenge tips. The body of CLAUDE.md describes the swarm loop generically; CHALLENGE.md describes what you are *actually* optimizing.
 
@@ -31,7 +31,7 @@ Save the `agent_id` and `agent_name` from the response. You'll need them for all
 
 Each agent maintains its **own current best** solution. You always iterate on your own best — never someone else's. When you stagnate (configurable threshold, default 2 iterations without improving your best), the server picks one of two strategies at random (50/50): either it tells you to consult your local `tacit_knowledge_personal.md` for private hints, or it gives you another agent's current best code as **inspiration** to study. Either way, you always edit your own code.
 
-If stagnation continues and hits a **stagnation limit** (a harder cap set by the swarm owner, 0 = disabled), a **trajectory reset** occurs: your current best is deposited into a shared pool of inactive algorithms, your best is cleared, and you start a new trajectory. The server uniformly picks from (all inactive algorithms + one "fresh start from seed" slot) — if an inactive algorithm is chosen, it's removed from the pool and becomes your new starting point. This recycles abandoned trajectories so promising directions aren't permanently lost.
+If stagnation continues and hits a **stagnation limit** (a harder cap set by the swarm host, 0 = disabled), a **trajectory reset** occurs: your current best is deposited into a shared pool of inactive algorithms, your best is cleared, and you start a new trajectory. The server uniformly picks from (all inactive algorithms + one "fresh start from seed" slot) — if an inactive algorithm is chosen, it's removed from the pool and becomes your new starting point. This recycles abandoned trajectories so promising directions aren't permanently lost.
 
 This means:
 - You own your lineage. Every improvement builds on YOUR prior best.
@@ -71,7 +71,7 @@ if flight:
 ```
 
 This returns:
-- `best_algorithm_code` — **your own** current best code (or the per-challenge seed from `server/seeds/<challenge>.rs` on first run; may be empty if the swarm owner hasn't ported a seed for the active challenge). Write this to `mod.rs`.
+- `best_algorithm_code` — **your own** current best code (or the per-challenge seed from `server/seeds/<challenge>.rs` on first run; may be empty if the swarm host hasn't ported a seed for the active challenge). Write this to `mod.rs`.
 - `my_best_score` — your current best score (null on first run)
 - `my_runs` — total iterations you've completed
 - `my_improvements` — how many times you've beaten your own best
@@ -115,7 +115,7 @@ if code:
 - If `stagnation_hint == "tacit_knowledge"`: read `tacit_knowledge_personal.md` in the repo root. Pick one hint that matches your situation and incorporate it. If the file is missing or empty, fall back to using `/tmp/inspiration.rs`.
 - If `stagnation_hint == "inspiration"`: read `/tmp/inspiration.rs` to study what another agent is doing differently. Look for techniques, data structures, or strategies you could adapt into your own code. But always edit `mod.rs` (your own best), not the inspiration file.
 
-On your **first iteration** (no current best yet), the server gives you the active challenge's seed from `server/seeds/<challenge>.rs`. If that seed file is empty (the swarm owner hasn't ported one), you'll need to author a minimal `solve_challenge` for the active challenge yourself before benchmarking.
+On your **first iteration** (no current best yet), the server gives you the active challenge's seed from `server/seeds/<challenge>.rs`. If that seed file is empty (the swarm host hasn't ported one), you'll need to author a minimal `solve_challenge` for the active challenge yourself before benchmarking.
 
 ### Step 3: Think and Edit
 
@@ -145,7 +145,7 @@ BENCH=$(python3 scripts/benchmark.py 2>/dev/null)
 echo "$BENCH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Score: {d[\"score\"]}, Feasible: {d[\"feasible\"]}')"
 ```
 
-This builds, generates the per-track instances on first run (cached under `datasets/<challenge>/generated/`), runs the solver on every instance from every track defined in the swarm's `swarm_config.tracks`, evaluates each, and outputs JSON. The instance count and per-instance timeout are whatever the swarm owner configured — check `swarm.config.json` if you need the exact numbers. **Save the output in `$BENCH`** — you will reuse it in Step 5.
+This builds, generates the per-track instances on first run (cached under `datasets/<challenge>/generated/`), runs the solver on every instance from every track defined in the swarm's `swarm_config.tracks`, evaluates each, and outputs JSON. The instance count and per-instance timeout are whatever the swarm host configured — check `swarm.config.json` if you need the exact numbers. **Save the output in `$BENCH`** — you will reuse it in Step 5.
 
 **Per-instance timeout** is the value the wizard chose (default 30s). If the solver times out but has called `save_solution()`, the saved solution is evaluated. If no solution was saved, the instance counts as infeasible. Write anytime algorithms that call `save_solution()` early and improve iteratively.
 

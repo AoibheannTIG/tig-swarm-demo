@@ -6,9 +6,11 @@ Supports 5 challenges: **satisfiability**, **vehicle routing**, **knapsack**, **
 
 The server is deployed to [Railway](https://railway.com). One swarm = one Railway service; the server, the SQLite database (on a Railway volume), and the dashboard all live in that one service.
 
+For the architecture of the search method itself (how agents collaborate, how inspiration is picked, scoring), see [ARCHITECTURE.md](./ARCHITECTURE.md). For the agent's runtime instructions, see [CLAUDE.md](./CLAUDE.md).
+
 ## Prerequisites
 
-**Owners** (hosting a swarm) need:
+**Hosts** (running a swarm) need:
 - A Railway account ([free trial credits cover this scale](https://railway.com/pricing)).
 - The Railway CLI. Install one of:
   ```bash
@@ -19,7 +21,7 @@ The server is deployed to [Railway](https://railway.com). One swarm = one Railwa
   ```
 - Python 3 (stdlib only).
 
-**Agents** (joining a swarm) need:
+**Contributors** (joining a swarm to run an agent) need:
 - Python 3 (stdlib only).
 - Rust toolchain. The agent installs it on demand if missing, or:
   ```bash
@@ -44,13 +46,15 @@ The wizard:
 
 The share URL is the swarm's identity — anyone with it can join, anyone with the dashboard URL can spectate. Save the admin key (also in `swarm.config.json`); it gates `/api/admin/*`.
 
-### Owning multiple swarms
+### Hosting multiple swarms
 
-Re-run `python setup.py create` to create a second, third, … swarm. Each invocation provisions a fresh, independent Railway project with its own URL, its own volume, its own admin key. The local `.railway/` link is overwritten each time, so the clone always tracks the most recently created swarm.
+Re-run `python setup.py create` to host a second, third, … swarm. Each invocation provisions a fresh, independent Railway project with its own URL, volume, and admin key. The local `.railway/` link is overwritten each time, so the clone always tracks the most recently created swarm.
 
 You can re-run from any clone — even a fresh one. The Railway projects exist independently in your Railway workspace; manage them through the [Railway dashboard](https://railway.com/dashboard).
 
 ## Join a swarm
+
+You got a URL from the host. From any directory:
 
 ```bash
 git clone <repo>
@@ -82,31 +86,7 @@ Hotkeys:
 
 Additional pages: `/ideas.html`, `/diversity.html`, `/benchmark.html`.
 
-## How it works
-
-1. Each agent **registers** with the server and gets a unique name.
-2. They **check state** to see what they've already tried against their own current best.
-3. They **edit** the algorithm file (`src/<challenge>/algorithm/mod.rs`) with improvements.
-4. They **benchmark** against the swarm's instance set.
-5. They **publish results** — the server broadcasts to the dashboard via WebSocket.
-6. When stagnating (2+ runs without improvement), the agent receives either a hint from `tacit_knowledge_personal.md` or another agent's code as **inspiration** (50/50 random).
-7. Repeat.
-
-Each agent owns its own lineage — improvements always build on its own best, with cross-pollination only via inspiration.
-
-## Per-deploy isolation
-
-Each swarm = one Railway service with its own SQLite DB on its own volume. There is no central server. Owners run their own swarms; the same owner can run several side-by-side; multiple owners can run completely separate swarms with no overlap.
-
-## Scoring
-
-Per-instance: baseline-relative quality `(baseline − you) / baseline × 1,000,000`, clamped to ±10,000,000. Higher is better.
-
-Per-track: arithmetic mean of per-instance quality.
-
-Overall: shifted geometric mean across tracks — one weak track drags everything down.
-
-## Admin
+## Admin (host operations)
 
 The admin key is generated fresh by `setup.py create` and printed on success. Find it later in `swarm.config.json` (`admin_key` field) or in your service's Railway Variables (`ADMIN_KEY`).
 
@@ -123,7 +103,7 @@ To wipe a swarm's data, recreate its volume in the Railway dashboard (Service �
 
 | Command | Who | What it does |
 |---------|-----|--------------|
-| `python setup.py create` | Owner | Provisions a new swarm on Railway via the `railway` CLI; prints share URL + admin key. |
+| `python setup.py create` | Host | Provisions a new swarm on Railway via the `railway` CLI; prints share URL + admin key. |
 | `python setup.py join <url>` | Contributor | Points this clone at an existing swarm. |
 
 ## Development (dashboard)

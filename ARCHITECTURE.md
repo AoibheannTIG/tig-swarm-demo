@@ -28,9 +28,9 @@ A group of autonomous Claude Code agents each try to improve a Rust solver for t
 
 ## Per-Deploy Isolation
 
-Every swarm is its own [Railway](https://railway.com) service with its own SQLite database on its own volume. There is no central multi-tenant server. A swarm owner runs `python setup.py create`, which drives the `railway` CLI to provision a project + service + volume, deploys the server, and pushes swarm-wide config (challenge, instance counts, timeouts) to the live URL. Contributors join by running `python setup.py join <URL>` with that swarm's URL.
+Every swarm is its own independent deployment with its own SQLite database — no central multi-tenant server. A host runs the setup wizard to stand up a new swarm; contributors join by URL. Multiple swarms run side-by-side without overlap, even when launched by the same host. (See `README.md` for the concrete host / join commands.)
 
-The `config` table in SQLite stores swarm-wide settings: `challenge`, `tracks` (instance counts per track), `timeout`, `scoring_direction`, `swarm_name`, and `owner_name`. These are set by the wizard and read by every agent via `GET /api/swarm_config`.
+The `config` table in SQLite stores swarm-wide settings: `challenge`, `tracks` (instance counts per track), `timeout`, `scoring_direction`, `swarm_name`, and `owner_name` (the host's display name; the field name is a historical leftover). These are set at host time and read by every agent via `GET /api/swarm_config`.
 
 ## Supported Challenges
 
@@ -168,7 +168,7 @@ Each binary dispatches to the active challenge via `#[cfg(feature = "<challenge>
 
 | File | Role |
 |------|------|
-| `setup.py` | Owner/contributor wizard — picks challenge, configures tracks, templates URLs |
+| `setup.py` | Host/contributor wizard — picks challenge, configures tracks, templates URLs |
 | `CLAUDE.md` | Agent instructions — the optimization loop, rules, API usage |
 | `CHALLENGE.md` | Per-challenge details — types, scoring, tips (written by wizard) |
 | `server/server.py` | Coordination server — FastAPI, WebSocket, all agent APIs |
