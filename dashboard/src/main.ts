@@ -67,13 +67,13 @@ function constructPanels() {
   initPanel(StatsPanel, "panel-stats");
   const challenge = getSwarmConfig().challenge;
   if (challenge === "job_scheduling") {
-    initPanel(GanttPanel, "panel-routes");
+    initPanel(GanttPanel, "panel-display");
   } else if (challenge === "knapsack") {
-    initPanel(KnapsackPanel, "panel-routes");
+    initPanel(KnapsackPanel, "panel-display");
   } else if (challenge === "energy_arbitrage") {
-    initPanel(EnergyPanel, "panel-routes");
+    initPanel(EnergyPanel, "panel-display");
   } else {
-    initPanel(RoutesPanel, "panel-routes");
+    initPanel(RoutesPanel, "panel-display");
   }
   chartPanel = initPanel(ChartPanel, "panel-chart") as ChartPanel;
   initPanel(DiversityPanel, "panel-diversity");

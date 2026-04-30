@@ -57,7 +57,7 @@ html, body {
 
 /* Panel areas */
 .panel-stats     { grid-column: 1 / -1; grid-row: 1; }
-.panel-routes    { grid-column: 1; grid-row: 2 / 4; }
+.panel-display   { grid-column: 1; grid-row: 2 / 4; }
 .panel-chart     { grid-column: 2; grid-row: 2; }
 .panel-diversity { grid-column: 2; grid-row: 3; }
 .panel-feed      { grid-column: 1; grid-row: 4; }
