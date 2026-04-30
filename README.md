@@ -46,6 +46,16 @@ The wizard:
 
 The share URL is the swarm's identity — anyone with it can join, anyone with the dashboard URL can spectate. Save the admin key (also in `swarm.config.json`); it gates `/api/admin/*`.
 
+### Initial algorithm
+
+Every agent in your swarm starts from the same **initial algorithm** on a fresh trajectory — both their first iteration and the "fresh start" slot of trajectory resets. It's broadcast to the whole swarm at create time, so all agents are evolving from the same baseline.
+
+The source is one editable file at the repo root: `initial_algorithm.rs`. By default it's a stub — the `solve_challenge` function signature with `unimplemented!()` for the body — so agents start from nothing and have to author a real implementation before they can produce a feasible solution.
+
+If you want to seed the swarm with a working starter (your own algorithm, a vendored reference, anything), edit `initial_algorithm.rs` *before* running `setup.py create`. The wizard reads whatever's in the file and pushes it to the server. Use `super::*` for the active challenge's `Challenge` and `Solution` types; see `CHALLENGE.md` (written by the wizard) for the exact type shapes.
+
+To change the initial algorithm later, you currently need to delete the swarm and create a new one — there's no in-place update yet.
+
 ### Hosting multiple swarms
 
 Re-run `python setup.py create` to host a second, third, … swarm. Each invocation provisions a fresh, independent Railway project with its own URL, volume, and admin key. The local `.railway/` link is overwritten each time, so the clone always tracks the most recently created swarm.
