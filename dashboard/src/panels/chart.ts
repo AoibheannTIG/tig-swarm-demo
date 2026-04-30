@@ -520,17 +520,29 @@ export class ChartPanel implements Panel {
       .domain([0, xDomainEnd])
       .range([0, w]);
 
-    // Y: match the GLOBAL chart domain/limits exactly when available.
-    // This intentionally allows agent points outside the domain to render
-    // off-chart so all tabs share the same visual scale.
+    // Y: anchor on the GLOBAL chart's domain when available so per-agent
+    // tabs roughly share a visual scale, but always extend it to include
+    // the agent's own min/max — otherwise an agent whose scores fall
+    // outside the global-best history (e.g. infeasible attempts, or runs
+    // whose scores never became the global best) gets clipped off-chart
+    // and looks like a flat line.
     const globalYDomain = this.getGlobalYDomain();
     const minScore = d3.min(exps, (d) => d.score)!;
     const maxScore = d3.max(exps, (d) => d.score)!;
     const fallbackPad = Math.max(Math.abs(maxScore - minScore) * 0.15, 1);
-    const fallbackMin = minScore - fallbackPad;
-    const fallbackMax = maxScore + fallbackPad;
-    const yScale = d3.scaleLog()
-      .domain(globalYDomain ?? [fallbackMin, fallbackMax])
+    const yDomain: [number, number] = globalYDomain
+      ? [
+          Math.min(globalYDomain[0], minScore - fallbackPad),
+          Math.max(globalYDomain[1], maxScore + fallbackPad),
+        ]
+      : [minScore - fallbackPad, maxScore + fallbackPad];
+    // scaleLog requires strictly positive values. Fall back to linear
+    // when the domain crosses zero — early infeasible attempts can produce
+    // negative quality scores under baseline-relative scoring.
+    const yScale = (yDomain[0] > 0 && yDomain[1] > 0
+      ? d3.scaleLog()
+      : d3.scaleLinear())
+      .domain(yDomain)
       .range([h, 0]);
 
     const yTicks = yScale.ticks(5);
